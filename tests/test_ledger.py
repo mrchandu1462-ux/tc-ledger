@@ -14,6 +14,8 @@ from tc_ledger.ledger import (
     evidence_commitment,
     leaf_hash,
     merkle_root,
+    merkle_proof,
+    verify_merkle_proof,
 )
 
 
@@ -208,4 +210,110 @@ def test_merkle_seven_leaf_root_matches_reproduced_vector():
 
     assert merkle_root(evidence_ids).hex() == (
         "2f6d403229481753bd718e317a6652fb31372dd0e16df7cb2db4403642f35664"
+    )
+
+def test_merkle_leaf_five_proof_matches_v1_vector():
+    evidence_ids = [
+        f"tc-ledger:v1:{i:064d}"
+        for i in range(1, 6)
+    ]
+
+    proof = merkle_proof(evidence_ids, 4)
+
+    assert len(proof) == 1
+    assert proof[0][0].hex() == (
+        "be6a2436be3e7269e50d8ecea3b21ff98d87ab432c92f25fc21cf1bb15a91c8e"
+    )
+    assert proof[0][1] == "left"
+
+    assert verify_merkle_proof(
+        evidence_ids[4],
+        proof,
+        merkle_root(evidence_ids),
+    )
+
+
+def test_merkle_leaf_one_three_step_proof_matches_v1_vector():
+    evidence_ids = [
+        f"tc-ledger:v1:{i:064d}"
+        for i in range(1, 6)
+    ]
+
+    proof = merkle_proof(evidence_ids, 0)
+
+    assert len(proof) == 3
+
+    assert proof[0][0].hex() == (
+        "dea3c2984c88f1fb936c44d8fdb7e7b8ddcfb43fa8c9c55c7b51702e8e5042c4"
+    )
+    assert proof[0][1] == "right"
+
+    assert proof[1][0].hex() == (
+        "94ff3c158e2f0c09f0f8e48ebae11ef4aa2f7f894acdaa5c25311fd065b8a030"
+    )
+    assert proof[1][1] == "right"
+
+    assert proof[2][0].hex() == (
+        "91d067d984e8177fe64ac7db2aa071f56246a2e95f4339214c79d655ad8ff8dc"
+    )
+    assert proof[2][1] == "right"
+
+    assert verify_merkle_proof(
+        evidence_ids[0],
+        proof,
+        merkle_root(evidence_ids),
+    )
+
+
+def test_merkle_seven_leaf_last_node_proof_verifies():
+    evidence_ids = [
+        f"tc-ledger:v1:{i:064d}"
+        for i in range(1, 8)
+    ]
+
+    proof = merkle_proof(evidence_ids, 6)
+
+    assert len(proof) == 2
+    assert proof[0][0].hex() == (
+        "5f3ccba5ef159588f89527559c6b6b1c645123c4ec2eac261b4e40743650572e"
+    )
+    assert proof[0][1] == "left"
+
+    assert proof[1][0].hex() == (
+        "be6a2436be3e7269e50d8ecea3b21ff98d87ab432c92f25fc21cf1bb15a91c8e"
+    )
+    assert proof[1][1] == "left"
+
+    assert verify_merkle_proof(
+        evidence_ids[6],
+        proof,
+        merkle_root(evidence_ids),
+    )
+
+
+def test_merkle_tampered_proof_is_rejected():
+    evidence_ids = [
+        f"tc-ledger:v1:{i:064d}"
+        for i in range(1, 6)
+    ]
+
+    proof = merkle_proof(evidence_ids, 0)
+    sibling, position = proof[0]
+
+    tampered_proof = list(proof)
+    tampered_proof[0] = (
+        bytes([sibling[0] ^ 1]) + sibling[1:],
+        position,
+    )
+
+    assert verify_merkle_proof(
+        evidence_ids[0],
+        proof,
+        merkle_root(evidence_ids),
+    )
+
+    assert not verify_merkle_proof(
+        evidence_ids[0],
+        tampered_proof,
+        merkle_root(evidence_ids),
     )

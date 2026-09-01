@@ -151,14 +151,16 @@ def node_hash(left: bytes, right: bytes) -> bytes:
     return hashlib.sha256(b"\x01" + left + right).digest()
 
 
-def merkle_root(evidence_ids: list[str]) -> bytes:
-    """Build a Merkle v1 root from ordered evidence identifiers."""
+
+def _build_levels(evidence_ids: list[str]) -> list[list[bytes]]:
+    """Build all Merkle v1 levels from ordered evidence identifiers."""
     if not evidence_ids:
-        return hashlib.sha256(b"").digest()
+        return [[hashlib.sha256(b"").digest()]]
 
-    level = [leaf_hash(evidence_id) for evidence_id in evidence_ids]
+    levels = [[leaf_hash(evidence_id) for evidence_id in evidence_ids]]
 
-    while len(level) > 1:
+    while len(levels[-1]) > 1:
+        level = levels[-1]
         next_level = []
 
         for index in range(0, len(level), 2):
@@ -170,9 +172,80 @@ def merkle_root(evidence_ids: list[str]) -> bytes:
                 right = level[index + 1]
                 next_level.append(node_hash(left, right))
 
-        level = next_level
+        levels.append(next_level)
 
-    return level[0]
+    return levels
+
+
+def merkle_root(evidence_ids: list[str]) -> bytes:
+    """Build a Merkle v1 root from ordered evidence identifiers."""
+    return _build_levels(evidence_ids)[-1][0]
+
+
+def merkle_proof(
+    evidence_ids: list[str],
+    index: int,
+) -> list[tuple[bytes, str]]:
+    """Generate a Merkle v1 inclusion proof for one evidence identifier."""
+    if not isinstance(index, int) or isinstance(index, bool):
+        raise TypeError("index must be an integer")
+
+    if index < 0 or index >= len(evidence_ids):
+        raise IndexError("index outside evidence identifier list")
+
+    levels = _build_levels(evidence_ids)
+    proof: list[tuple[bytes, str]] = []
+    current_index = index
+
+    for level in levels[:-1]:
+        if current_index % 2 == 0:
+            sibling_index = current_index + 1
+
+            if sibling_index < len(level):
+                proof.append((level[sibling_index], "right"))
+        else:
+            sibling_index = current_index - 1
+            proof.append((level[sibling_index], "left"))
+
+        current_index //= 2
+
+    return proof
+
+def verify_merkle_proof(
+    evidence_id: str,
+    proof: list[tuple[bytes, str]],
+    expected_root: bytes,
+) -> bool:
+    """Verify a Merkle v1 inclusion proof."""
+    if not isinstance(evidence_id, str):
+        raise TypeError("evidence_id must be a string")
+
+    if not isinstance(expected_root, bytes):
+        raise TypeError("expected_root must be bytes")
+
+    if len(expected_root) != 32:
+        raise ValueError("expected_root must be 32 bytes")
+
+    if not isinstance(proof, list):
+        raise TypeError("proof must be a list")
+
+    current = leaf_hash(evidence_id)
+
+    for sibling, position in proof:
+        if not isinstance(sibling, bytes):
+            raise TypeError("proof sibling hash must be bytes")
+
+        if len(sibling) != 32:
+            raise ValueError("proof sibling hash must be 32 bytes")
+
+        if position == "left":
+            current = node_hash(sibling, current)
+        elif position == "right":
+            current = node_hash(current, sibling)
+        else:
+            raise ValueError("proof position must be 'left' or 'right'")
+
+    return current == expected_root
 
 
 def evidence_commitment(record: dict, room: str) -> str:
