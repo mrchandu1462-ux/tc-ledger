@@ -12,6 +12,8 @@ from tc_ledger.ledger import (
     verify_signed_record,
     verify_export,
     evidence_commitment,
+    leaf_hash,
+    merkle_root,
 )
 
 
@@ -169,4 +171,41 @@ def test_evidence_commitment_matches_v1_vector():
     assert evidence_commitment(record, "kibble") == (
         "tc-ledger:v1:"
         "892e8c6b6cd74e6bee0b60ab5ed0e1d546f1640195c7f0604687218bdfc6c677"
+    )
+
+MERKLE_TEST_IDS = [
+    "tc-ledger:v1:0000000000000000000000000000000000000000000000000000000000000001",
+    "tc-ledger:v1:0000000000000000000000000000000000000000000000000000000000000002",
+    "tc-ledger:v1:0000000000000000000000000000000000000000000000000000000000000003",
+    "tc-ledger:v1:0000000000000000000000000000000000000000000000000000000000000004",
+    "tc-ledger:v1:0000000000000000000000000000000000000000000000000000000000000005",
+]
+
+
+def test_merkle_empty_root():
+    assert merkle_root([]).hex() == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+
+
+def test_merkle_single_leaf_root_equals_leaf():
+    evidence_id = "tc-ledger:v1:single"
+
+    assert merkle_root([evidence_id]) == leaf_hash(evidence_id)
+
+
+def test_merkle_five_leaf_root_matches_v1_vector():
+    assert merkle_root(MERKLE_TEST_IDS).hex() == (
+        "47e08ddf4237cb6466253e1cbad77d3aa6607e815436085fcb36c9799e52739d"
+    )
+
+
+def test_merkle_seven_leaf_root_matches_reproduced_vector():
+    evidence_ids = [
+        f"tc-ledger:v1:{i:064d}"
+        for i in range(1, 8)
+    ]
+
+    assert merkle_root(evidence_ids).hex() == (
+        "2f6d403229481753bd718e317a6652fb31372dd0e16df7cb2db4403642f35664"
     )

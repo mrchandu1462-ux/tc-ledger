@@ -132,6 +132,49 @@ def verify_signed_record(record: dict, room: str) -> VerificationResult:
     return VerificationResult(seq=record["seq"], status="VALID")
 
 
+def leaf_hash(evidence_id: str) -> bytes:
+    """Hash an evidence identifier as a Merkle v1 leaf."""
+    if not isinstance(evidence_id, str):
+        raise TypeError("evidence_id must be a string")
+
+    return hashlib.sha256(b"\x00" + evidence_id.encode("utf-8")).digest()
+
+
+def node_hash(left: bytes, right: bytes) -> bytes:
+    """Hash two Merkle v1 child nodes."""
+    if not isinstance(left, bytes) or not isinstance(right, bytes):
+        raise TypeError("Merkle child hashes must be bytes")
+
+    if len(left) != 32 or len(right) != 32:
+        raise ValueError("Merkle child hashes must be 32 bytes")
+
+    return hashlib.sha256(b"\x01" + left + right).digest()
+
+
+def merkle_root(evidence_ids: list[str]) -> bytes:
+    """Build a Merkle v1 root from ordered evidence identifiers."""
+    if not evidence_ids:
+        return hashlib.sha256(b"").digest()
+
+    level = [leaf_hash(evidence_id) for evidence_id in evidence_ids]
+
+    while len(level) > 1:
+        next_level = []
+
+        for index in range(0, len(level), 2):
+            left = level[index]
+
+            if index + 1 >= len(level):
+                next_level.append(left)
+            else:
+                right = level[index + 1]
+                next_level.append(node_hash(left, right))
+
+        level = next_level
+
+    return level[0]
+
+
 def evidence_commitment(record: dict, room: str) -> str:
     """Create a tc-ledger v1 evidence commitment.
 
