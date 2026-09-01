@@ -140,6 +140,14 @@ def leaf_hash(evidence_id: str) -> bytes:
     return hashlib.sha256(b"\x00" + evidence_id.encode("utf-8")).digest()
 
 
+
+def export_leaf_hash(raw_line_bytes: bytes) -> bytes:
+    """Hash one captured export line as an Export Commitment v1 leaf."""
+    if not isinstance(raw_line_bytes, bytes):
+        raise TypeError("raw_line_bytes must be bytes")
+
+    return hashlib.sha256(b"\x00" + raw_line_bytes).digest()
+
 def node_hash(left: bytes, right: bytes) -> bytes:
     """Hash two Merkle v1 child nodes."""
     if not isinstance(left, bytes) or not isinstance(right, bytes):
@@ -248,6 +256,38 @@ def verify_merkle_proof(
     return current == expected_root
 
 
+def export_merkle_root(raw_lines: list[bytes]) -> bytes:
+    """Build an Export Commitment v1 Merkle root from captured lines."""
+    if not isinstance(raw_lines, list):
+        raise TypeError("raw_lines must be a list")
+
+    if not raw_lines:
+        return hashlib.sha256(b"").digest()
+
+    level = []
+
+    for raw_line in raw_lines:
+        if not isinstance(raw_line, bytes):
+            raise TypeError("each raw line must be bytes")
+        level.append(export_leaf_hash(raw_line))
+
+    while len(level) > 1:
+        next_level = []
+
+        for index in range(0, len(level), 2):
+            left = level[index]
+
+            if index + 1 >= len(level):
+                next_level.append(left)
+            else:
+                right = level[index + 1]
+                next_level.append(node_hash(left, right))
+
+        level = next_level
+
+    return level[0]
+
+
 def evidence_commitment(record: dict, room: str) -> str:
     """Create a tc-ledger v1 evidence commitment.
 
@@ -277,6 +317,16 @@ def evidence_commitment(record: dict, room: str) -> str:
     return f"tc-ledger:v1:{digest}"
 
 
+
+def _classify_export_line(line: str, room: str) -> VerificationResult:
+    """Classify one non-blank JSONL export line."""
+    record = json.loads(line)
+
+    if not isinstance(record, dict):
+        raise MalformedRecord("record must be a JSON object")
+
+    return verify_signed_record(record, room)
+
 def verify_export(path: str, room: str) -> dict[str, int]:
     counts = {
         "VALID": 0,
@@ -292,11 +342,7 @@ def verify_export(path: str, room: str) -> dict[str, int]:
                 continue
 
             try:
-                record = json.loads(line)
-                if not isinstance(record, dict):
-                    raise MalformedRecord("record must be a JSON object")
-
-                result = verify_signed_record(record, room)
+                result = _classify_export_line(line, room)
                 counts[result.status] += 1
 
             except UnsupportedKeyType as exc:
