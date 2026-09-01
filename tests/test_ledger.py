@@ -14,6 +14,12 @@ from tc_ledger.ledger import (
     evidence_commitment,
     leaf_hash,
     merkle_root,
+    export_leaf_hash,
+    export_merkle_root,
+    map_evidence_to_export,
+    find_duplicate_evidence_ids,
+    EvidenceLeafMapping,
+    ExportEvidenceIndex,
     merkle_proof,
     verify_merkle_proof,
 )
@@ -316,4 +322,251 @@ def test_merkle_tampered_proof_is_rejected():
         evidence_ids[0],
         tampered_proof,
         merkle_root(evidence_ids),
+    )
+
+EXPORT_RAW_LINES = [
+    b'{"seq":1,"text":"alpha"}' + bytes([10]),
+    b'{"seq":2,"text":"beta"}' + bytes([10]),
+    bytes([10]),
+    b'{"seq":3,"text":',
+]
+
+
+def test_export_leaf_hash_matches_raw_byte_vector():
+    expected = [
+        "abdc89455a812d5e701133e2b0e61f0c0978dd358021e0c75d18037b93f922b5",
+        "22187d1fdaa8ec03cbf0cbfe727b98698dbe586ed8c6de135ab9e49cbe1ec3a7",
+        "67ebbd370daa02ba9aadd05d8e091e862d0d8bcadafdf2a22360240a42fe922e",
+        "38c3cb8ccae67d1a734a9bb5fd87959781a3c01badf69f2befd6534b78360fb8",
+    ]
+
+    actual = [
+        export_leaf_hash(raw_line).hex()
+        for raw_line in EXPORT_RAW_LINES
+    ]
+
+    assert actual == expected
+
+
+def test_export_merkle_root_matches_raw_byte_vector():
+    assert export_merkle_root(EXPORT_RAW_LINES).hex() == (
+        "d3fda195c2bec1d0882440c4fa72777d71d4e6079463852f2fb44ecabacc281b"
+    )
+
+
+def test_export_empty_root_matches_sha256_empty():
+    assert export_merkle_root([]).hex() == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+
+
+def test_export_single_line_root_equals_leaf():
+    raw_line = b'{"seq":1,"text":"single"}' + bytes([10])
+
+    assert export_merkle_root([raw_line]) == export_leaf_hash(raw_line)
+
+def make_deterministic_mapping_records():
+    import base64
+    import base58
+    from nacl.signing import SigningKey
+
+    def make_did(signing_key):
+        public_key = bytes(signing_key.verify_key)
+        payload = b"\xed\x01" + public_key
+        return "did:key:z" + base58.b58encode(payload).decode()
+
+    def make_record(seed, seq, nonce, text):
+        signing_key = SigningKey(seed=bytes(seed))
+        did = make_did(signing_key)
+
+        message = f"kibble|{nonce}|{text}".encode("utf-8")
+        signature = signing_key.sign(message).signature
+        sig = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+
+        return {
+            "seq": seq,
+            "ts": "2026-09-01T00:00:00Z",
+            "from": did,
+            "text": text,
+            "nonce": nonce,
+            "sig": sig,
+        }
+
+    valid_1 = make_record(range(0, 32), 1, 10001, "alpha")
+    valid_2 = make_record(range(32, 64), 2, 10002, "beta")
+
+    unsigned = make_record(range(64, 96), 5, 10005, "unsigned")
+    del unsigned["sig"]
+    del unsigned["nonce"]
+
+    malformed = b'{"seq":4,"text":'
+
+    invalid = make_record(range(96, 128), 6, 10006, "tampered")
+    invalid["text"] = "tampered-after-signing"
+
+    records = [
+        valid_1,
+        valid_2,
+        None,
+        malformed,
+        unsigned,
+        invalid,
+    ]
+
+    raw_lines = []
+
+    for item in records:
+        if isinstance(item, bytes):
+            raw_lines.append(item)
+        elif item is None:
+            raw_lines.append(bytes([10]))
+        else:
+            raw_lines.append(
+                json.dumps(
+                    item,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8") + bytes([10])
+            )
+
+    return records, raw_lines
+
+
+def test_map_evidence_to_export_matches_deterministic_vector():
+    records, raw_lines = make_deterministic_mapping_records()
+
+    index = map_evidence_to_export(raw_lines, "kibble")
+
+    assert index.export_root.hex() == (
+        "f43ea7c83535b25d01b218be956e0768d5015179dddb681569d0dc4929de40d5"
+    )
+
+    assert index.export_root == export_merkle_root(raw_lines)
+
+    assert index.mappings == [
+        EvidenceLeafMapping(
+            evidence_id=(
+                "tc-ledger:v1:"
+                "91e246308a156e69afcd0837bb8d403e96f5ca0a3f0c6576e2243acc77ec3617"
+            ),
+            export_leaf_index=0,
+        ),
+        EvidenceLeafMapping(
+            evidence_id=(
+                "tc-ledger:v1:"
+                "9b70bb047371584384fc49b61c6206f9316520cebae3a741e279f330f55e73f9"
+            ),
+            export_leaf_index=1,
+        ),
+    ]
+
+
+def test_map_evidence_to_export_excludes_non_valid_lines():
+    records, raw_lines = make_deterministic_mapping_records()
+
+    index = map_evidence_to_export(raw_lines, "kibble")
+
+    mapped_indices = [
+        mapping.export_leaf_index
+        for mapping in index.mappings
+    ]
+
+    assert mapped_indices == [0, 1]
+
+    assert all(
+        index not in mapped_indices
+        for index in [2, 3, 4, 5]
+    )
+
+
+def test_map_evidence_to_export_empty_export():
+    index = map_evidence_to_export([], "kibble")
+
+    assert index.export_root.hex() == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert index.mappings == []
+
+
+def test_find_duplicate_evidence_ids_preserves_duplicates():
+    duplicate_id = "tc-ledger:v1:duplicate"
+
+    index = ExportEvidenceIndex(
+        export_root=bytes(32),
+        mappings=[
+            EvidenceLeafMapping(duplicate_id, 0),
+            EvidenceLeafMapping("tc-ledger:v1:other", 1),
+            EvidenceLeafMapping(duplicate_id, 2),
+            EvidenceLeafMapping(duplicate_id, 3),
+        ],
+    )
+
+    assert find_duplicate_evidence_ids(index) == [duplicate_id]
+
+
+def test_valid_mapping_indices_are_zero_based():
+    _, raw_lines = make_deterministic_mapping_records()
+
+    index = map_evidence_to_export(raw_lines, "kibble")
+
+    assert [m.export_leaf_index for m in index.mappings] == [0, 1]
+    assert [m.export_leaf_index + 1 for m in index.mappings] == [1, 2]
+
+def test_mapping_excludes_malformed_line():
+    _, raw_lines = make_deterministic_mapping_records()
+
+    index = map_evidence_to_export(raw_lines, "kibble")
+
+    assert all(
+        mapping.export_leaf_index != 3
+        for mapping in index.mappings
+    )
+
+
+def test_mapping_excludes_unsigned_line():
+    _, raw_lines = make_deterministic_mapping_records()
+
+    index = map_evidence_to_export(raw_lines, "kibble")
+
+    assert all(
+        mapping.export_leaf_index != 4
+        for mapping in index.mappings
+    )
+
+
+def test_mapping_excludes_invalid_signature_line():
+    _, raw_lines = make_deterministic_mapping_records()
+
+    index = map_evidence_to_export(raw_lines, "kibble")
+
+    assert all(
+        mapping.export_leaf_index != 5
+        for mapping in index.mappings
+    )
+
+
+def test_mapping_excludes_unsupported_key_line():
+    records, raw_lines = make_deterministic_mapping_records()
+
+    record = records[0].copy()
+
+    decoded = base58.b58decode(record["from"][9:])
+    fake_payload = b"\x80\x01" + decoded[2:]
+    record["from"] = (
+        "did:key:z" + base58.b58encode(fake_payload).decode()
+    )
+
+    raw_lines[0] = (
+        json.dumps(
+            record,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8") + bytes([10])
+    )
+
+    index = map_evidence_to_export(raw_lines, "kibble")
+
+    assert all(
+        mapping.export_leaf_index != 0
+        for mapping in index.mappings
     )

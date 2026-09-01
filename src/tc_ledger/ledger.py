@@ -288,6 +288,92 @@ def export_merkle_root(raw_lines: list[bytes]) -> bytes:
     return level[0]
 
 
+
+@dataclass(frozen=True)
+class EvidenceLeafMapping:
+    evidence_id: str
+    export_leaf_index: int
+
+
+@dataclass(frozen=True)
+class ExportEvidenceIndex:
+    export_root: bytes
+    mappings: list[EvidenceLeafMapping]
+
+
+def map_evidence_to_export(
+    raw_lines: list[bytes],
+    room: str,
+) -> ExportEvidenceIndex:
+    """Map valid evidence identifiers to leaves in a complete export."""
+    if not isinstance(raw_lines, list):
+        raise TypeError("raw_lines must be a list")
+
+    if not isinstance(room, str):
+        raise TypeError("room must be a string")
+
+    export_root = export_merkle_root(raw_lines)
+    mappings: list[EvidenceLeafMapping] = []
+
+    for index, raw_line in enumerate(raw_lines):
+        if not isinstance(raw_line, bytes):
+            raise TypeError("each raw line must be bytes")
+
+        if not raw_line.strip():
+            continue
+
+        try:
+            result = _classify_export_line(
+                raw_line.decode("utf-8"),
+                room,
+            )
+        except UnsupportedKeyType:
+            continue
+        except InvalidSignature:
+            continue
+        except (UnicodeDecodeError, json.JSONDecodeError, MalformedRecord):
+            continue
+
+        if result.status != "VALID":
+            continue
+
+        record = json.loads(raw_line)
+
+        evidence_id = evidence_commitment(record, room)
+
+        mappings.append(
+            EvidenceLeafMapping(
+                evidence_id=evidence_id,
+                export_leaf_index=index,
+            )
+        )
+
+    return ExportEvidenceIndex(
+        export_root=export_root,
+        mappings=mappings,
+    )
+
+
+def find_duplicate_evidence_ids(
+    index: ExportEvidenceIndex,
+) -> list[str]:
+    """Return evidence IDs occurring more than once, preserving first-seen order."""
+    seen: set[str] = set()
+    duplicate_seen: set[str] = set()
+    duplicates: list[str] = []
+
+    for mapping in index.mappings:
+        evidence_id = mapping.evidence_id
+
+        if evidence_id in seen:
+            if evidence_id not in duplicate_seen:
+                duplicate_seen.add(evidence_id)
+                duplicates.append(evidence_id)
+        else:
+            seen.add(evidence_id)
+
+    return duplicates
+
 def evidence_commitment(record: dict, room: str) -> str:
     """Create a tc-ledger v1 evidence commitment.
 
