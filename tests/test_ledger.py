@@ -11,6 +11,7 @@ from tc_ledger.ledger import (
     UnsupportedKeyType,
     verify_signed_record,
     verify_export,
+    evidence_commitment,
 )
 
 
@@ -153,3 +154,19 @@ def test_export_counts(tmp_path):
     assert counts["INVALID"] == 0
     assert counts["MALFORMED"] == 0
     assert counts["UNSUPPORTED_KEY"] == 0
+
+
+def test_evidence_commitment_matches_v1_vector():
+    record = {
+        "seq": 123456,
+        "ts": "2026-09-01T00:00:00Z",
+        "from": "did:key:z6MkTestVector",
+        "text": "tc-ledger v1 test",
+        "nonce": 17002,
+        "sig": "TEST_SIGNATURE_64_BYTES_PLACEHOLDER",
+    }
+
+    assert evidence_commitment(record, "kibble") == (
+        "tc-ledger:v1:"
+        "892e8c6b6cd74e6bee0b60ab5ed0e1d546f1640195c7f0604687218bdfc6c677"
+    )

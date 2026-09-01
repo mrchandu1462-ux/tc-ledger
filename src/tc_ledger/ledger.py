@@ -2,11 +2,13 @@
 
 import argparse
 import base64
+import hashlib
 import json
 import sys
 from dataclasses import dataclass
 
 import base58
+import jcs
 from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 
@@ -128,6 +130,35 @@ def verify_signed_record(record: dict, room: str) -> VerificationResult:
         raise InvalidSignature("Ed25519 signature verification failed") from exc
 
     return VerificationResult(seq=record["seq"], status="VALID")
+
+
+def evidence_commitment(record: dict, room: str) -> str:
+    """Create a tc-ledger v1 evidence commitment.
+
+    The caller is responsible for verifying the record's Technocore
+    signature before treating the resulting commitment as verified evidence.
+    """
+    required = ("seq", "ts", "from", "text", "nonce", "sig")
+
+    for field in required:
+        if field not in record:
+            raise MalformedRecord(f"missing evidence field: {field}")
+
+    payload = {
+        "version": 1,
+        "room": room,
+        "seq": record["seq"],
+        "ts": record["ts"],
+        "from": record["from"],
+        "text": record["text"],
+        "nonce": record["nonce"],
+        "sig": record["sig"],
+    }
+
+    canonical = jcs.canonicalize(payload)
+    digest = hashlib.sha256(canonical).hexdigest()
+
+    return f"tc-ledger:v1:{digest}"
 
 
 def verify_export(path: str, room: str) -> dict[str, int]:
