@@ -1,0 +1,25 @@
+﻿[project]
+name = "tc-ledger"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Chandu Saikam", email = "btech21279@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "base58>=2.1.1",
+    "pynacl>=1.6.2",
+]
+
+[project.scripts]
+tc-ledger = "tc_ledger.ledger:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

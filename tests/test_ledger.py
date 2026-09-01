@@ -1,0 +1,155 @@
+﻿import base64
+import json
+
+import base58
+import pytest
+from nacl.signing import SigningKey
+
+from tc_ledger.ledger import (
+    InvalidSignature,
+    MalformedRecord,
+    UnsupportedKeyType,
+    verify_signed_record,
+    verify_export,
+)
+
+
+def make_did(signing_key: SigningKey) -> str:
+    public_key = bytes(signing_key.verify_key)
+    payload = b"\xed\x01" + public_key
+    return "did:key:z" + base58.b58encode(payload).decode()
+
+
+def make_record(room="kibble", nonce=12345, text="hello"):
+    signing_key = SigningKey.generate()
+    did = make_did(signing_key)
+
+    message = f"{room}|{nonce}|{text}".encode("utf-8")
+    signature = signing_key.sign(message).signature
+    sig = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+
+    return {
+        "seq": 1,
+        "ts": "2026-09-01T00:00:00Z",
+        "from": did,
+        "text": text,
+        "nonce": nonce,
+        "sig": sig,
+    }
+
+
+def test_valid_signed_record():
+    record = make_record()
+    result = verify_signed_record(record, "kibble")
+    assert result.status == "VALID"
+
+
+def test_tampered_text_is_invalid():
+    record = make_record()
+    record["text"] = "tampered"
+
+    with pytest.raises(InvalidSignature):
+        verify_signed_record(record, "kibble")
+
+
+def test_wrong_room_is_invalid():
+    record = make_record(room="kibble")
+
+    with pytest.raises(InvalidSignature):
+        verify_signed_record(record, "lobby")
+
+
+def test_unsigned_record():
+    record = make_record()
+    del record["sig"]
+    del record["nonce"]
+
+    result = verify_signed_record(record, "kibble")
+    assert result.status == "UNSIGNED"
+
+
+def test_missing_required_field_is_malformed():
+    record = make_record()
+    del record["text"]
+
+    with pytest.raises(MalformedRecord):
+        verify_signed_record(record, "kibble")
+
+
+def test_unsupported_multicodec():
+    record = make_record()
+
+    decoded = base58.b58decode(record["from"][9:])
+    fake_payload = b"\x80\x01" + decoded[2:]
+    record["from"] = "did:key:z" + base58.b58encode(fake_payload).decode()
+
+    with pytest.raises(UnsupportedKeyType):
+        verify_signed_record(record, "kibble")
+
+
+def test_correct_multicodec_wrong_key_length():
+    record = make_record()
+
+    decoded = base58.b58decode(record["from"][9:])
+    truncated_payload = b"\xed\x01" + decoded[2:-1]
+    record["from"] = "did:key:z" + base58.b58encode(truncated_payload).decode()
+
+    with pytest.raises(MalformedRecord):
+        verify_signed_record(record, "kibble")
+
+
+def test_invalid_signature_length():
+    record = make_record()
+    record["sig"] = "AAAA"
+
+    with pytest.raises(MalformedRecord):
+        verify_signed_record(record, "kibble")
+
+
+def test_empty_export(tmp_path):
+    path = tmp_path / "empty.jsonl"
+    path.write_text("", encoding="utf-8")
+
+    counts = verify_export(str(path), "kibble")
+
+    assert counts == {
+        "VALID": 0,
+        "INVALID": 0,
+        "UNSIGNED": 0,
+        "MALFORMED": 0,
+        "UNSUPPORTED_KEY": 0,
+    }
+
+
+def test_truncated_json_line(tmp_path):
+    path = tmp_path / "truncated.jsonl"
+    path.write_text(
+        '{"seq":1,"ts":"2026-09-01T00:00:00Z","from":"did:key:z',
+        encoding="utf-8",
+    )
+
+    counts = verify_export(str(path), "kibble")
+
+    assert counts["MALFORMED"] == 1
+    assert counts["VALID"] == 0
+
+
+def test_export_counts(tmp_path):
+    valid = make_record()
+    unsigned = make_record()
+    del unsigned["sig"]
+    del unsigned["nonce"]
+
+    path = tmp_path / "sample.jsonl"
+    path.write_text(
+        json.dumps(valid) + "\n" + json.dumps(unsigned) + "\n",
+        encoding="utf-8",
+    )
+
+    counts = verify_export(str(path), "kibble")
+
+    assert counts["VALID"] == 1
+    assert counts["UNSIGNED"] == 1
+    assert counts["INVALID"] == 0
+    assert counts["MALFORMED"] == 0
+    assert counts["UNSUPPORTED_KEY"] == 0
