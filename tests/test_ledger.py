@@ -425,6 +425,14 @@ def test_export_single_line_root_equals_leaf():
 
     assert export_merkle_root([raw_line]) == export_leaf_hash(raw_line)
 
+def test_export_line_terminator_changes_root():
+    content = b'{"seq":1,"text":"same"}'
+
+    lf_root = export_merkle_root([content + b"\n"])
+    crlf_root = export_merkle_root([content + b"\r\n"])
+
+    assert lf_root != crlf_root
+
 def make_deterministic_mapping_records():
     import base64
     import base58

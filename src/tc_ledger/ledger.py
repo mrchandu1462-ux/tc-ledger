@@ -479,7 +479,7 @@ def main() -> int:
 
     if args.command == "commit":
         with open(args.path, "rb") as f:
-            raw_lines = f.read().splitlines()
+            raw_lines = f.readlines()
         index = map_evidence_to_export(raw_lines, args.room)
         counts = verify_export(args.path, args.room)
 
