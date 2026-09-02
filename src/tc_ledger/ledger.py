@@ -468,7 +468,36 @@ def main() -> int:
     verify_parser.add_argument("path")
     verify_parser.add_argument("--room", required=True)
 
+    commit_parser = subparsers.add_parser(
+        "commit",
+        help="commit a JSONL Technocore export",
+    )
+    commit_parser.add_argument("path")
+    commit_parser.add_argument("--room", required=True)
+
     args = parser.parse_args()
+
+    if args.command == "commit":
+        with open(args.path, "rb") as f:
+            raw_lines = f.read().splitlines()
+        index = map_evidence_to_export(raw_lines, args.room)
+        counts = verify_export(args.path, args.room)
+
+        print(f"Room: {args.room}")
+        print(f"Export lines: {len(raw_lines)}")
+        print(f"Export Merkle root: {index.export_root.hex()}")
+        print(f"Valid signatures: {counts['VALID']}")
+        print(f"Invalid signatures: {counts['INVALID']}")
+        print(f"Unsigned records: {counts['UNSIGNED']}")
+        print(f"Malformed records: {counts['MALFORMED']}")
+        print(f"Unsupported key types: {counts['UNSUPPORTED_KEY']}")
+        print(f"Evidence mappings: {len(index.mappings)}")
+        print(f"Duplicate evidence IDs: {len(find_duplicate_evidence_ids(index))}")
+
+        if counts["INVALID"] or counts["MALFORMED"]:
+            return 1
+
+        return 0
 
     if args.command == "verify":
         counts = verify_export(args.path, args.room)

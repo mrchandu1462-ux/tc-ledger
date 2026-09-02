@@ -1,5 +1,6 @@
-﻿import base64
+import base64
 import json
+import sys
 
 import base58
 import pytest
@@ -22,6 +23,7 @@ from tc_ledger.ledger import (
     ExportEvidenceIndex,
     merkle_proof,
     verify_merkle_proof,
+    main,
 )
 
 
@@ -116,6 +118,64 @@ def test_invalid_signature_length():
     with pytest.raises(MalformedRecord):
         verify_signed_record(record, "kibble")
 
+
+def test_commit_cli_clean_export(tmp_path, capsys):
+    valid = make_record()
+    unsigned = make_record()
+    del unsigned["sig"]
+    del unsigned["nonce"]
+
+    path = tmp_path / "sample.jsonl"
+    path.write_text(
+        json.dumps(valid) + "\n" + json.dumps(unsigned) + "\n",
+        encoding="utf-8",
+    )
+
+    old_argv = sys.argv
+    sys.argv = ["tc-ledger", "commit", "--room", "kibble", str(path)]
+    try:
+        exit_code = main()
+    finally:
+        sys.argv = old_argv
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Room: kibble" in captured.out
+    assert "Export lines: 2" in captured.out
+    assert "Valid signatures: 1" in captured.out
+    assert "Unsigned records: 1" in captured.out
+    assert "Evidence mappings: 1" in captured.out
+    assert "Duplicate evidence IDs: 0" in captured.out
+
+
+def test_commit_cli_tampered_export(tmp_path, capsys):
+    valid = make_record()
+
+    tampered = dict(valid)
+    tampered["text"] = "tampered"
+
+    path = tmp_path / "tampered.jsonl"
+    path.write_text(
+        json.dumps(tampered) + "\n",
+        encoding="utf-8",
+    )
+
+    old_argv = sys.argv
+    sys.argv = ["tc-ledger", "commit", "--room", "kibble", str(path)]
+    try:
+        exit_code = main()
+    finally:
+        sys.argv = old_argv
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Room: kibble" in captured.out
+    assert "Export lines: 1" in captured.out
+    assert "Invalid signatures: 1" in captured.out
+    assert "Evidence mappings: 0" in captured.out
+    assert "INVALID line 1" in captured.err
 
 def test_empty_export(tmp_path):
     path = tmp_path / "empty.jsonl"
