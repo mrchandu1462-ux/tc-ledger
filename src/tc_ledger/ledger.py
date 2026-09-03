@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+from pathlib import Path
 import sys
 from dataclasses import dataclass
 
@@ -521,7 +522,120 @@ def main() -> int:
     commit_parser.add_argument("--room", required=True)
     commit_parser.add_argument("--output")
 
+    subparsers.add_parser(
+        "vectors",
+        help="validate frozen v1 test vectors",
+    )
+
     args = parser.parse_args()
+    if args.command == "vectors":
+        vectors_path = (
+            Path(__file__).resolve().parents[2]
+            / "vectors"
+            / "vectors.json"
+        )
+
+        if not vectors_path.is_file():
+            print(f"Vectors not found: {vectors_path}", file=sys.stderr)
+            return 3
+
+        try:
+            document = json.loads(
+                vectors_path.read_text(encoding="utf-8")
+            )
+
+            if document["version"] != 1:
+                raise ValueError("unsupported vector version")
+
+            if document["profile"] != "tc-ledger/1":
+                raise ValueError("unsupported vector profile")
+
+            # Merkle vectors.
+            for vector in document["merkle"]["trivial"]:
+                lines = [
+                    base64.b64decode(value)
+                    for value in vector["leaves_b64"]
+                ]
+
+                if [
+                    export_leaf_hash(line).hex()
+                    for line in lines
+                ] != vector["leaf_hashes"]:
+                    raise ValueError(
+                        f"leaf vector mismatch for n={vector['n']}"
+                    )
+
+                if export_merkle_root(lines).hex() != vector["root"]:
+                    raise ValueError(
+                        f"root vector mismatch for n={vector['n']}"
+                    )
+
+            # Byte-model vectors.
+            for vector in document["byte_model"]:
+                data = base64.b64decode(vector["data_b64"])
+                leaves = [] if not data else [data]
+
+                if [
+                    base64.b64encode(line).decode("ascii")
+                    for line in leaves
+                ] != vector["leaves_b64"]:
+                    raise ValueError(
+                        f"byte-model leaf mismatch: {vector['name']}"
+                    )
+
+                if [
+                    export_leaf_hash(line).hex()
+                    for line in leaves
+                ] != vector["leaf_hashes"]:
+                    raise ValueError(
+                        f"byte-model hash mismatch: {vector['name']}"
+                    )
+
+                if export_merkle_root(leaves).hex() != vector["root"]:
+                    raise ValueError(
+                        f"byte-model root mismatch: {vector['name']}"
+                    )
+
+            # Synthetic export vectors.
+            synthetic = document["synthetic_export"]
+            synthetic_lines = [
+                base64.b64decode(item["bytes_b64"])
+                for item in synthetic["lines"]
+            ]
+
+            if [
+                len(line)
+                for line in synthetic_lines
+            ] != [
+                item["byte_length"]
+                for item in synthetic["lines"]
+            ]:
+                raise ValueError("synthetic byte-length mismatch")
+
+            if [
+                export_leaf_hash(line).hex()
+                for line in synthetic_lines
+            ] != [
+                item["leaf_hash"]
+                for item in synthetic["lines"]
+            ]:
+                raise ValueError("synthetic leaf-hash mismatch")
+
+            if export_merkle_root(synthetic_lines).hex() != synthetic["root"]:
+                raise ValueError("synthetic root mismatch")
+
+            print("C3 vectors: OK")
+            return 0
+
+        except (
+            KeyError,
+            ValueError,
+            TypeError,
+            json.JSONDecodeError,
+            UnicodeError,
+        ) as exc:
+            print(f"C3 vectors: FAIL: {exc}", file=sys.stderr)
+            return 3
 
     if args.command == "commit":
         with open(args.path, "rb") as f:
