@@ -1,6 +1,7 @@
 import base64
 import json
 import sys
+import hashlib
 
 import base58
 import pytest
@@ -638,3 +639,130 @@ def test_mapping_excludes_unsupported_key_line():
         mapping.export_leaf_index != 0
         for mapping in index.mappings
     )
+
+def _rfc6962_reference_root(evidence_ids):
+    """Independent RFC 6962 recursive reference construction."""
+    if not evidence_ids:
+        return hashlib.sha256(b"").digest()
+
+    leaves = [
+        hashlib.sha256(b"\x00" + evidence_id.encode("utf-8")).digest()
+        for evidence_id in evidence_ids
+    ]
+
+    def build(items):
+        if len(items) == 1:
+            return items[0]
+
+        split = 1 << (len(items).bit_length() - 1)
+        if split == len(items):
+            split >>= 1
+
+        return hashlib.sha256(
+            b"\x01" + build(items[:split]) + build(items[split:])
+        ).digest()
+
+    return build(leaves)
+
+
+def _rfc6962_reference_proof(evidence_ids, index):
+    """Independent RFC 6962 recursive proof construction."""
+    def subtree_root(start, end):
+        return _rfc6962_reference_root(evidence_ids[start:end])
+
+    def build(start, end):
+        if end - start == 1:
+            return subtree_root(start, end), []
+
+        split = 1 << ((end - start).bit_length() - 1)
+        if split == end - start:
+            split >>= 1
+
+        middle = start + split
+
+        if index < middle:
+            root, path = build(start, middle)
+            sibling = subtree_root(middle, end)
+            return root, path + [(sibling, "right")]
+
+        root, path = build(middle, end)
+        sibling = subtree_root(start, middle)
+        return root, path + [(sibling, "left")]
+
+    _, proof = build(0, len(evidence_ids))
+    return proof
+
+def test_merkle_rfc6962_reference_roots_n_0_through_64():
+    for size in range(65):
+        evidence_ids = [
+            f"tc-ledger:v1:{i:064d}"
+            for i in range(size)
+        ]
+
+        assert merkle_root(evidence_ids) == _rfc6962_reference_root(
+            evidence_ids
+        )
+
+
+def test_merkle_rfc6962_reference_proofs_n_1_through_64():
+    for size in range(1, 65):
+        evidence_ids = [
+            f"tc-ledger:v1:{i:064d}"
+            for i in range(size)
+        ]
+
+        expected_root = _rfc6962_reference_root(evidence_ids)
+
+        for index in range(size):
+            actual = merkle_proof(evidence_ids, index)
+            expected = _rfc6962_reference_proof(evidence_ids, index)
+
+            assert actual == expected
+            assert verify_merkle_proof(
+                evidence_ids[index],
+                actual,
+                expected_root,
+            )
+
+def test_export_byte_model_preserves_final_unterminated_line():
+    content = b'{"seq":1,"text":"final"}'
+
+    assert export_merkle_root([content]) == export_leaf_hash(content)
+
+
+def test_export_byte_model_treats_blank_line_as_zero_length_leaf():
+    blank = b"\n"
+
+    assert export_merkle_root([blank]) == export_leaf_hash(blank)
+
+
+def test_export_byte_model_distinguishes_lf_crlf_and_literal_cr():
+    content = b'{"seq":1,"text":"same"}'
+
+    lf = export_leaf_hash(content + b"\n")
+    crlf = export_leaf_hash(content + b"\r\n")
+    cr = export_leaf_hash(content + b"\r")
+
+    assert lf != crlf
+    assert lf != cr
+    assert cr != crlf
+
+
+def test_export_byte_model_hashes_raw_bytes_without_utf8_decoding():
+    raw_line = b"\xff\xfe\x00\x80\n"
+
+    assert export_merkle_root([raw_line]) == export_leaf_hash(raw_line)
+
+
+def test_export_byte_model_double_newline_creates_two_leaves():
+    first = b'{"seq":1}\n'
+    second = b"\n"
+
+    root = export_merkle_root([first, second])
+
+    assert root != export_leaf_hash(first)
+    assert root != export_leaf_hash(second)
+
+
+def test_export_byte_model_empty_file_has_sha256_empty_root():
+    assert export_merkle_root([]) == hashlib.sha256(b"").digest()
