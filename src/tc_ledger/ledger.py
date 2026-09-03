@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import base64
@@ -455,6 +455,51 @@ def verify_export(path: str, room: str) -> dict[str, int]:
     return counts
 
 
+def build_commitment_artifact(
+    raw_lines: list[bytes],
+    room: str,
+    counts: dict[str, int],
+) -> dict:
+    """Build a machine-readable Export Commitment v1 artifact."""
+    index = map_evidence_to_export(raw_lines, room)
+
+    return {
+        "version": 1,
+        "room": room,
+        "export_line_count": len(raw_lines),
+        "export_root": index.export_root.hex(),
+        "verification": {
+            "VALID": counts["VALID"],
+            "INVALID": counts["INVALID"],
+            "UNSIGNED": counts["UNSIGNED"],
+            "MALFORMED": counts["MALFORMED"],
+            "UNSUPPORTED_KEY": counts["UNSUPPORTED_KEY"],
+        },
+        "evidence_mappings": [
+            {
+                "evidence_id": mapping.evidence_id,
+                "export_leaf_index": mapping.export_leaf_index,
+            }
+            for mapping in index.mappings
+        ],
+    }
+
+
+def write_commitment_artifact(
+    path: str,
+    artifact: dict,
+) -> None:
+    """Write a deterministic JSON commitment artifact."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(
+            artifact,
+            handle,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        handle.write("\n")
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify signed records from a Technocore room export."
@@ -474,6 +519,7 @@ def main() -> int:
     )
     commit_parser.add_argument("path")
     commit_parser.add_argument("--room", required=True)
+    commit_parser.add_argument("--output")
 
     args = parser.parse_args()
 
@@ -497,8 +543,16 @@ def main() -> int:
         if counts["INVALID"] or counts["MALFORMED"]:
             return 1
 
-        return 0
+        if args.output:
+            artifact = build_commitment_artifact(
+                raw_lines,
+                args.room,
+                counts,
+            )
+            write_commitment_artifact(args.output, artifact)
+            print(f"Commitment artifact: {args.output}")
 
+        return 0
     if args.command == "verify":
         counts = verify_export(args.path, args.room)
 
@@ -511,6 +565,7 @@ def main() -> int:
 
         if counts["INVALID"] or counts["MALFORMED"]:
             return 1
+
 
         return 0
 
