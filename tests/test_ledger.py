@@ -13,6 +13,8 @@ from tc_ledger.ledger import (
     UnsupportedKeyType,
     verify_signed_record,
     verify_export,
+    build_commitment_artifact,
+    classify_export_lines,
     evidence_commitment,
     leaf_hash,
     merkle_root,
@@ -226,6 +228,97 @@ def test_export_counts(tmp_path):
     assert counts["MALFORMED"] == 0
     assert counts["UNSUPPORTED_KEY"] == 0
 
+
+def test_classify_export_lines_returns_anomaly_indices(tmp_path):
+    valid = make_record()
+    unsigned = make_record()
+    del unsigned["sig"]
+    del unsigned["nonce"]
+
+    malformed = '{"seq":1,"ts":"broken"'
+
+    path = tmp_path / "classify.jsonl"
+    path.write_text(
+        json.dumps(valid) + "\n"
+        + json.dumps(unsigned) + "\n"
+        + malformed + "\n",
+        encoding="utf-8",
+    )
+
+    raw_lines = path.read_bytes().splitlines(keepends=True)
+    counts, anomaly_indices = classify_export_lines(raw_lines, "kibble")
+
+    assert counts["VALID"] == 1
+    assert counts["UNSIGNED"] == 1
+    assert counts["MALFORMED"] == 1
+    assert counts["INVALID"] == 0
+    assert counts["UNSUPPORTED_KEY"] == 0
+    assert anomaly_indices == [2]
+
+
+def test_build_commitment_artifact_contains_c4_metadata():
+    raw_lines = [
+        b'{"first":1}\n',
+        b'{"second":2}\n',
+    ]
+
+    counts = {
+        "VALID": 1,
+        "INVALID": 0,
+        "UNSIGNED": 1,
+        "MALFORMED": 0,
+        "UNSUPPORTED_KEY": 0,
+    }
+    anomaly_indices = [1]
+
+    artifact = build_commitment_artifact(
+        raw_lines,
+        "kibble",
+        counts,
+        anomaly_indices,
+    )
+
+    assert artifact["version"] == 1
+    assert artifact["profile"] == "tc-ledger/1"
+    assert artifact["room"] == "kibble"
+    assert artifact["line_count"] == 2
+    assert artifact["byte_count"] == sum(len(line) for line in raw_lines)
+    assert artifact["file_sha256"] == hashlib.sha256(
+        b"".join(raw_lines)
+    ).hexdigest()
+    assert artifact["export_root"] == export_merkle_root(raw_lines).hex()
+    assert artifact["verification"] == counts
+    assert artifact["anomaly_indices"] == [1]
+
+
+def test_build_commitment_artifact_preserves_exact_bytes():
+    raw_lines = [
+        b'{"text":"one"}\r\n',
+        b'{"text":"two"}\n',
+    ]
+
+    counts = {
+        "VALID": 2,
+        "INVALID": 0,
+        "UNSIGNED": 0,
+        "MALFORMED": 0,
+        "UNSUPPORTED_KEY": 0,
+    }
+
+    artifact = build_commitment_artifact(
+        raw_lines,
+        "kibble",
+        counts,
+        [],
+    )
+
+    expected = hashlib.sha256(
+        b'{"text":"one"}\r\n{"text":"two"}\n'
+    ).hexdigest()
+
+    assert artifact["line_count"] == 2
+    assert artifact["byte_count"] == 31
+    assert artifact["file_sha256"] == expected
 
 def test_evidence_commitment_matches_v1_vector():
     record = {
