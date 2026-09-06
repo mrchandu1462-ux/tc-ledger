@@ -460,15 +460,17 @@ def build_commitment_artifact(
     raw_lines: list[bytes],
     room: str,
     counts: dict[str, int],
+    anomaly_indices: list[int],
 ) -> dict:
     """Build a machine-readable Export Commitment v1 artifact."""
-    index = map_evidence_to_export(raw_lines, room)
-
     return {
         "version": 1,
+        "profile": "tc-ledger/1",
         "room": room,
-        "export_line_count": len(raw_lines),
-        "export_root": index.export_root.hex(),
+        "line_count": len(raw_lines),
+        "byte_count": sum(len(line) for line in raw_lines),
+        "file_sha256": hashlib.sha256(b"".join(raw_lines)).hexdigest(),
+        "export_root": export_merkle_root(raw_lines).hex(),
         "verification": {
             "VALID": counts["VALID"],
             "INVALID": counts["INVALID"],
@@ -476,14 +478,51 @@ def build_commitment_artifact(
             "MALFORMED": counts["MALFORMED"],
             "UNSUPPORTED_KEY": counts["UNSUPPORTED_KEY"],
         },
-        "evidence_mappings": [
-            {
-                "evidence_id": mapping.evidence_id,
-                "export_leaf_index": mapping.export_leaf_index,
-            }
-            for mapping in index.mappings
-        ],
+        "anomaly_indices": list(anomaly_indices),
     }
+
+
+def classify_export_lines(
+    raw_lines: list[bytes],
+    room: str,
+) -> tuple[dict[str, int], list[int]]:
+    """Classify captured export lines and return anomaly indices.
+
+    Blank physical lines are skipped and are not anomalies.
+    UNSIGNED records are classified but are not anomalies.
+    INVALID, MALFORMED, and UNSUPPORTED_KEY records are anomalies.
+    """
+    counts = {
+        "VALID": 0,
+        "INVALID": 0,
+        "UNSIGNED": 0,
+        "MALFORMED": 0,
+        "UNSUPPORTED_KEY": 0,
+    }
+    anomaly_indices: list[int] = []
+
+    for index, raw_line in enumerate(raw_lines):
+        if not raw_line.strip():
+            continue
+
+        try:
+            line = raw_line.decode("utf-8")
+            result = _classify_export_line(line, room)
+            counts[result.status] += 1
+
+        except UnsupportedKeyType:
+            counts["UNSUPPORTED_KEY"] += 1
+            anomaly_indices.append(index)
+
+        except InvalidSignature:
+            counts["INVALID"] += 1
+            anomaly_indices.append(index)
+
+        except (UnicodeDecodeError, json.JSONDecodeError, VerificationError):
+            counts["MALFORMED"] += 1
+            anomaly_indices.append(index)
+
+    return counts, anomaly_indices
 
 
 def write_commitment_artifact(
@@ -642,6 +681,7 @@ def main() -> int:
             raw_lines = f.readlines()
         index = map_evidence_to_export(raw_lines, args.room)
         counts = verify_export(args.path, args.room)
+        _, anomaly_indices = classify_export_lines(raw_lines, args.room)
 
         print(f"Room: {args.room}")
         print(f"Export lines: {len(raw_lines)}")
@@ -662,13 +702,17 @@ def main() -> int:
                 raw_lines,
                 args.room,
                 counts,
+                anomaly_indices,
             )
             write_commitment_artifact(args.output, artifact)
             print(f"Commitment artifact: {args.output}")
 
         return 0
     if args.command == "verify":
+        with open(args.path, "rb") as f:
+            raw_lines = f.readlines()
         counts = verify_export(args.path, args.room)
+        _, anomaly_indices = classify_export_lines(raw_lines, args.room)
 
         print(f"Room: {args.room}")
         print(f"Valid signatures: {counts['VALID']}")
