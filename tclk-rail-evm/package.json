@@ -1,0 +1,25 @@
+{
+  "name": "@flop-labs/tclk-rail-evm",
+  "version": "0.1.0",
+  "description": "EVM HTLC SettlementRail for Technocore Lock Protocol (tclk/1)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build:contracts": "forge build",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run build:contracts && npm run build:ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "viem": "^2.38.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

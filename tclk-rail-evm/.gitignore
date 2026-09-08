@@ -1,0 +1,12 @@
+# Foundry build artifacts & cache
+out/
+cache/
+lib/
+
+# Node / TypeScript dependencies & build outputs
+node_modules/
+dist/
+
+# OS & Logs
+.DS_Store
+*.log
