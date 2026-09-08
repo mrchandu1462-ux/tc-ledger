@@ -652,6 +652,246 @@ contract HtlcTest is Test {
             refundTimestamp
         );
     }
+
+    /* -------------------------------------------------------------------------- */
+    /*                 16. ERC-20 Reentrancy Security Tests                       */
+    /* -------------------------------------------------------------------------- */
+
+    function test_Reentrancy_Claim_During_TransferFrom_Reverts_And_RollsBack()
+        public
+    {
+        MockReentrantERC20 reentrantToken = new MockReentrantERC20();
+        reentrantToken.mint(payer, TOKEN_AMOUNT * 2);
+
+        bytes32 otherId = bytes32(hex"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        reentrantToken.setParams(
+            htlc,
+            ReentrancyMode.ReenterClaim,
+            contractId,
+            otherId,
+            secret,
+            payee,
+            refundTimestamp,
+            TOKEN_AMOUNT
+        );
+
+        vm.prank(payer);
+        reentrantToken.approve(address(htlc), TOKEN_AMOUNT * 2);
+
+        uint256 payerBefore = reentrantToken.balanceOf(payer);
+
+        // Outer lock checks balance delta after transferFrom. Because reentrant claim
+        // moved tokens out, balanceAfter - balanceBefore != amount, reverting outer lock.
+        vm.expectRevert(Htlc.TransferFailed.selector);
+        vm.prank(payer);
+        htlc.lock(
+            contractId,
+            payee,
+            address(reentrantToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+
+        // Verify atomic rollback: escrow is not locked/claimed, funds are not drained
+        Htlc.Escrow memory e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.None));
+        assertEq(reentrantToken.balanceOf(payee), 0);
+        assertEq(reentrantToken.balanceOf(address(htlc)), 0);
+        assertEq(reentrantToken.balanceOf(payer), payerBefore);
+    }
+
+    function test_Reentrancy_Refund_During_TransferFrom_Reverts_And_RollsBack()
+        public
+    {
+        MockReentrantERC20 reentrantToken = new MockReentrantERC20();
+        reentrantToken.mint(payer, TOKEN_AMOUNT * 2);
+
+        bytes32 otherId = bytes32(hex"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        reentrantToken.setParams(
+            htlc,
+            ReentrancyMode.ReenterRefund,
+            contractId,
+            otherId,
+            secret,
+            payee,
+            refundTimestamp,
+            TOKEN_AMOUNT
+        );
+
+        vm.prank(payer);
+        reentrantToken.approve(address(htlc), TOKEN_AMOUNT * 2);
+
+        uint256 payerBefore = reentrantToken.balanceOf(payer);
+
+        // Reentrant refund reverts because block.timestamp < refundTimestamp
+        vm.expectRevert(Htlc.RefundTooEarly.selector);
+        vm.prank(payer);
+        htlc.lock(
+            contractId,
+            payee,
+            address(reentrantToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+
+        // Verify atomic rollback: escrow status is None and HTLC has 0 balance
+        Htlc.Escrow memory e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.None));
+        assertEq(reentrantToken.balanceOf(address(htlc)), 0);
+        assertEq(reentrantToken.balanceOf(payer), payerBefore);
+    }
+
+    function test_Reentrancy_Lock_SameContractId_Reverts_And_RollsBack()
+        public
+    {
+        MockReentrantERC20 reentrantToken = new MockReentrantERC20();
+        reentrantToken.mint(payer, TOKEN_AMOUNT * 2);
+
+        bytes32 otherId = bytes32(hex"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        reentrantToken.setParams(
+            htlc,
+            ReentrancyMode.ReenterLockSameId,
+            contractId,
+            otherId,
+            secret,
+            payee,
+            refundTimestamp,
+            TOKEN_AMOUNT
+        );
+
+        vm.prank(payer);
+        reentrantToken.approve(address(htlc), TOKEN_AMOUNT * 2);
+
+        uint256 payerBefore = reentrantToken.balanceOf(payer);
+
+        // Reentrant lock with same contractId reverts with AlreadyExists
+        vm.expectRevert(Htlc.AlreadyExists.selector);
+        vm.prank(payer);
+        htlc.lock(
+            contractId,
+            payee,
+            address(reentrantToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+
+        // Verify atomic rollback
+        Htlc.Escrow memory e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.None));
+        assertEq(reentrantToken.balanceOf(address(htlc)), 0);
+        assertEq(reentrantToken.balanceOf(payer), payerBefore);
+    }
+
+    function test_Reentrancy_Lock_DifferentContractId_Reverts_And_RollsBack()
+        public
+    {
+        MockReentrantERC20 reentrantToken = new MockReentrantERC20();
+        reentrantToken.mint(payer, TOKEN_AMOUNT * 2);
+
+        bytes32 otherId = bytes32(hex"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        reentrantToken.setParams(
+            htlc,
+            ReentrancyMode.ReenterLockDifferentId,
+            contractId,
+            otherId,
+            secret,
+            payee,
+            refundTimestamp,
+            TOKEN_AMOUNT
+        );
+
+        vm.prank(payer);
+        reentrantToken.approve(address(htlc), TOKEN_AMOUNT * 2);
+
+        uint256 payerBefore = reentrantToken.balanceOf(payer);
+
+        // Nested lock increases HTLC balance by extra tokens, causing outer lock
+        // balance delta check (balanceAfter - balanceBefore == amount) to fail.
+        vm.expectRevert(Htlc.TransferFailed.selector);
+        vm.prank(payer);
+        htlc.lock(
+            contractId,
+            payee,
+            address(reentrantToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+
+        // Verify atomic rollback: neither escrow is left funded or created
+        Htlc.Escrow memory e1 = htlc.getEscrow(contractId);
+        Htlc.Escrow memory e2 = htlc.getEscrow(otherId);
+        assertEq(uint8(e1.status), uint8(Htlc.EscrowStatus.None));
+        assertEq(uint8(e2.status), uint8(Htlc.EscrowStatus.None));
+        assertEq(reentrantToken.balanceOf(address(htlc)), 0);
+        assertEq(reentrantToken.balanceOf(payer), payerBefore);
+    }
+
+    function test_ReentrantMock_Legitimate_Lock_Claim_Refund_Success()
+        public
+    {
+        MockReentrantERC20 reentrantToken = new MockReentrantERC20();
+        reentrantToken.mint(payer, TOKEN_AMOUNT * 2);
+
+        bytes32 otherId = bytes32(hex"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        reentrantToken.setParams(
+            htlc,
+            ReentrancyMode.None,
+            contractId,
+            otherId,
+            secret,
+            payee,
+            refundTimestamp,
+            TOKEN_AMOUNT
+        );
+
+        vm.startPrank(payer);
+        reentrantToken.approve(address(htlc), TOKEN_AMOUNT * 2);
+
+        // 1. Legitimate lock succeeds
+        htlc.lock(
+            contractId,
+            payee,
+            address(reentrantToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+        vm.stopPrank();
+
+        Htlc.Escrow memory e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.Locked));
+        assertEq(reentrantToken.balanceOf(address(htlc)), TOKEN_AMOUNT);
+
+        // 2. Legitimate claim succeeds
+        htlc.claim(contractId, secret);
+        assertEq(reentrantToken.balanceOf(payee), TOKEN_AMOUNT);
+        assertEq(reentrantToken.balanceOf(address(htlc)), 0);
+        e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.Claimed));
+
+        // 3. Legitimate lock & refund succeeds on otherId
+        vm.startPrank(payer);
+        htlc.lock(
+            otherId,
+            payee,
+            address(reentrantToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+        vm.stopPrank();
+
+        vm.warp(refundTimestamp);
+        htlc.refund(otherId);
+
+        Htlc.Escrow memory e2 = htlc.getEscrow(otherId);
+        assertEq(uint8(e2.status), uint8(Htlc.EscrowStatus.Refunded));
+        assertEq(reentrantToken.balanceOf(address(htlc)), 0);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -750,6 +990,124 @@ contract MockFeeOnTransferERC20 {
         uint256 received = amount - FEE;
         balanceOf[to] += received;
 
+        return true;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     Reentrant Malicious ERC-20 Mock                        */
+/* -------------------------------------------------------------------------- */
+
+enum ReentrancyMode {
+    None,
+    ReenterClaim,
+    ReenterRefund,
+    ReenterLockSameId,
+    ReenterLockDifferentId
+}
+
+contract MockReentrantERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    Htlc public htlc;
+    ReentrancyMode public mode;
+
+    bytes32 public targetContractId;
+    bytes32 public reenterContractId;
+    bytes32 public secret;
+    address payable public payee;
+    uint64 public refundTimestamp;
+    uint256 public lockAmount;
+
+    function setParams(
+        Htlc _htlc,
+        ReentrancyMode _mode,
+        bytes32 _targetContractId,
+        bytes32 _reenterContractId,
+        bytes32 _secret,
+        address payable _payee,
+        uint64 _refundTimestamp,
+        uint256 _lockAmount
+    ) external {
+        htlc = _htlc;
+        mode = _mode;
+        targetContractId = _targetContractId;
+        reenterContractId = _reenterContractId;
+        secret = _secret;
+        payee = _payee;
+        refundTimestamp = _refundTimestamp;
+        lockAmount = _lockAmount;
+        balanceOf[address(this)] += _lockAmount * 10;
+        allowance[address(this)][address(_htlc)] = type(uint256).max;
+    }
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool) {
+        require(balanceOf[from] >= amount, "insufficient balance");
+        require(
+            allowance[from][msg.sender] >= amount,
+            "insufficient allowance"
+        );
+
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+
+        // Trigger reentrancy callback during transferFrom
+        if (mode == ReentrancyMode.ReenterClaim) {
+            mode = ReentrancyMode.None;
+            htlc.claim(targetContractId, secret);
+        } else if (mode == ReentrancyMode.ReenterRefund) {
+            mode = ReentrancyMode.None;
+            htlc.refund(targetContractId);
+        } else if (mode == ReentrancyMode.ReenterLockSameId) {
+            mode = ReentrancyMode.None;
+            htlc.lock(
+                targetContractId,
+                payee,
+                address(this),
+                lockAmount,
+                sha256(abi.encodePacked(secret)),
+                refundTimestamp
+            );
+        } else if (mode == ReentrancyMode.ReenterLockDifferentId) {
+            mode = ReentrancyMode.None;
+            htlc.lock(
+                reenterContractId,
+                payee,
+                address(this),
+                lockAmount,
+                sha256(abi.encodePacked(secret)),
+                refundTimestamp
+            );
+        }
+
+        return true;
+    }
+
+    function transfer(
+        address to,
+        uint256 amount
+    ) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
         return true;
     }
 }
