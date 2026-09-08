@@ -102,8 +102,7 @@ contract Htlc {
         } else {
             if (msg.value != 0) revert InvalidAmount();
             uint256 balanceBefore = IERC20(token).balanceOf(address(this));
-            bool ok = IERC20(token).transferFrom(msg.sender, address(this), amount);
-            if (!ok) revert TransferFailed();
+            _safeTransferFrom(token, msg.sender, address(this), amount);
             uint256 balanceAfter = IERC20(token).balanceOf(address(this));
             if (balanceAfter - balanceBefore != amount) revert TransferFailed();
         }
@@ -134,8 +133,7 @@ contract Htlc {
             (bool ok, ) = payee.call{value: amount}("");
             if (!ok) revert TransferFailed();
         } else {
-            bool ok = IERC20(token).transfer(payee, amount);
-            if (!ok) revert TransferFailed();
+            _safeTransfer(token, payee, amount);
         }
     }
 
@@ -162,8 +160,49 @@ contract Htlc {
             (bool ok, ) = payer.call{value: amount}("");
             if (!ok) revert TransferFailed();
         } else {
-            bool ok = IERC20(token).transfer(payer, amount);
-            if (!ok) revert TransferFailed();
+            _safeTransfer(token, payer, amount);
+        }
+    }
+
+    /**
+     * @dev Safe ERC-20 transfer supporting both standard bool-returning and non-standard void-returning tokens.
+     *      Bubbles up inner revert reason if the token call reverted with data.
+     */
+    function _safeTransfer(address token, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
+        );
+        if (!success) {
+            if (data.length != 0) {
+                assembly {
+                    revert(add(32, data), mload(data))
+                }
+            }
+            revert TransferFailed();
+        }
+        if (data.length != 0 && !abi.decode(data, (bool))) {
+            revert TransferFailed();
+        }
+    }
+
+    /**
+     * @dev Safe ERC-20 transferFrom supporting both standard bool-returning and non-standard void-returning tokens.
+     *      Bubbles up inner revert reason if the token call reverted with data.
+     */
+    function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, amount)
+        );
+        if (!success) {
+            if (data.length != 0) {
+                assembly {
+                    revert(add(32, data), mload(data))
+                }
+            }
+            revert TransferFailed();
+        }
+        if (data.length != 0 && !abi.decode(data, (bool))) {
+            revert TransferFailed();
         }
     }
 

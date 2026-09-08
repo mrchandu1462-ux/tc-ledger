@@ -892,6 +892,74 @@ contract HtlcTest is Test {
         assertEq(uint8(e2.status), uint8(Htlc.EscrowStatus.Refunded));
         assertEq(reentrantToken.balanceOf(address(htlc)), 0);
     }
+
+    /* -------------------------------------------------------------------------- */
+    /*             17. Zero-Return ERC-20 (USDT-style) Security Tests             */
+    /* -------------------------------------------------------------------------- */
+
+    function test_NoReturnERC20_Lock_And_Claim_Success() public {
+        MockNoReturnERC20 noReturnToken = new MockNoReturnERC20();
+        noReturnToken.mint(payer, TOKEN_AMOUNT);
+
+        vm.startPrank(payer);
+        noReturnToken.approve(address(htlc), TOKEN_AMOUNT);
+
+        // 1. Zero-return ERC-20 lock() succeeds
+        htlc.lock(
+            contractId,
+            payee,
+            address(noReturnToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+        vm.stopPrank();
+
+        Htlc.Escrow memory e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.Locked));
+        assertEq(noReturnToken.balanceOf(address(htlc)), TOKEN_AMOUNT);
+        assertEq(noReturnToken.balanceOf(payer), 0);
+
+        // 2. Zero-return ERC-20 claim() succeeds
+        htlc.claim(contractId, secret);
+
+        assertEq(noReturnToken.balanceOf(payee), TOKEN_AMOUNT);
+        assertEq(noReturnToken.balanceOf(address(htlc)), 0);
+
+        e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.Claimed));
+    }
+
+    function test_NoReturnERC20_Lock_And_Refund_Success() public {
+        MockNoReturnERC20 noReturnToken = new MockNoReturnERC20();
+        noReturnToken.mint(payer, TOKEN_AMOUNT);
+
+        vm.startPrank(payer);
+        noReturnToken.approve(address(htlc), TOKEN_AMOUNT);
+
+        // 1. Zero-return ERC-20 lock() succeeds
+        htlc.lock(
+            contractId,
+            payee,
+            address(noReturnToken),
+            TOKEN_AMOUNT,
+            hashlock,
+            refundTimestamp
+        );
+        vm.stopPrank();
+
+        assertEq(noReturnToken.balanceOf(address(htlc)), TOKEN_AMOUNT);
+
+        // 2. Zero-return ERC-20 refund() succeeds
+        vm.warp(refundTimestamp);
+        htlc.refund(contractId);
+
+        assertEq(noReturnToken.balanceOf(payer), TOKEN_AMOUNT);
+        assertEq(noReturnToken.balanceOf(address(htlc)), 0);
+
+        Htlc.Escrow memory e = htlc.getEscrow(contractId);
+        assertEq(uint8(e.status), uint8(Htlc.EscrowStatus.Refunded));
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1109,5 +1177,43 @@ contract MockReentrantERC20 {
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     Zero-Return ERC-20 Mock (e.g. USDT)                    */
+/* -------------------------------------------------------------------------- */
+
+contract MockNoReturnERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external {
+        allowance[msg.sender][spender] = amount;
+    }
+
+    function transfer(address to, uint256 amount) external {
+        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external {
+        require(balanceOf[from] >= amount, "insufficient balance");
+        require(
+            allowance[from][msg.sender] >= amount,
+            "insufficient allowance"
+        );
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
     }
 }
