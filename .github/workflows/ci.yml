@@ -51,6 +51,9 @@ jobs:
         with:
           version: nightly
 
+      - name: Install Foundry Dependencies
+        run: forge install foundry-rs/forge-std --no-git
+
       - name: Run Foundry Contract Tests
         run: forge test
 
