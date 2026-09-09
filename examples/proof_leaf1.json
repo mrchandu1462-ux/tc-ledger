@@ -15,6 +15,7 @@
   "leaf_index": 1,
   "profile": "tc-ledger/1",
   "room": "demo-room",
+  "schema": "tc-ledger/inclusion-proof/v1",
   "tree_size": 4,
   "version": 1
 }

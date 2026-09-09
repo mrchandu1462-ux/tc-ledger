@@ -58,10 +58,10 @@ def main():
     export_root = artifact_data["export_root"]
     print(f"    Committed Export Merkle Root: {export_root}")
 
-    print("\n[4] Re-Deriving & Verifying Commitment Artifact (tc-ledger verify-commitment)...")
+    print("\n[4] Re-Deriving & Verifying Commitment Artifact (tc-ledger verify-artifact)...")
     code, out = run_cmd(
         [
-            "verify-commitment",
+            "verify-artifact",
             str(EXPORT_FILE),
             str(commit_artifact),
             "--expected-room",
@@ -70,7 +70,7 @@ def main():
     )
     print(f"    Return code: {code}")
     print(f"    Output: {out}")
-    assert code == 0 and "VERIFY-COMMITMENT: VALID" in out, "Commitment artifact re-derivation failed!"
+    assert code == 0 and "VERIFY-ARTIFACT: VALID" in out, "Commitment artifact re-derivation failed!"
 
     print("\n[5] Generating Inclusion Proof for Leaf Index 1 (tc-ledger prove)...")
     proof_file = EXAMPLES_DIR / "proof_leaf1.json"

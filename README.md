@@ -157,8 +157,8 @@ tc-ledger verify examples/synthetic_export.jsonl --room demo-room
 tc-ledger commit examples/synthetic_export.jsonl --room demo-room --output examples/commitment.json
 
 # 3. Independently verify and re-derive the commitment artifact
-tc-ledger verify-commitment examples/synthetic_export.jsonl examples/commitment.json --expected-room demo-room
-# Outputs: VERIFY-COMMITMENT: VALID (exit code 0)
+tc-ledger verify-artifact examples/synthetic_export.jsonl examples/commitment.json --expected-room demo-room --expected-root aae69af634f328ce701799c7d9e6a7b67403733e0c9f2ddd7de42469e17dcc00
+# Outputs: VERIFY-ARTIFACT: VALID (exit code 0)
 
 # 4. Generate inclusion proof for leaf index 1 (Bob''s record)
 tc-ledger prove examples/synthetic_export.jsonl --room demo-room --leaf-index 1 --generation 1 --output examples/proof_leaf1.json

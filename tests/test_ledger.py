@@ -426,6 +426,115 @@ def test_cli_verify_commitment_lifecycle(tmp_path, monkeypatch):
     )
     assert main() == 1
 
+
+
+def test_verify_commitment_artifact_with_file_paths(tmp_path):
+    raw_lines = [b'{"a":1}\n', b'{"b":2}\n']
+    export_file = tmp_path / "exp.jsonl"
+    export_file.write_bytes(b"".join(raw_lines))
+    counts, anomalies = classify_export_lines(raw_lines, "r1")
+    artifact = build_commitment_artifact(raw_lines, "r1", counts, anomalies)
+    art_file = tmp_path / "art.json"
+    art_file.write_text(json.dumps(artifact), encoding="utf-8")
+
+    # verify with file paths (Path and str)
+    assert verify_commitment_artifact(export_file, art_file) is True
+    assert verify_commitment_artifact(str(export_file), str(art_file), expected_root=artifact["export_root"]) is True
+    assert verify_commitment_artifact(export_file, art_file, expected_room="r1") is True
+    assert verify_commitment_artifact(export_file, art_file, expected_root="0" * 64) is False
+
+
+def test_verify_inclusion_proof_artifact_with_file_paths(tmp_path):
+    raw_lines = [b'{"line":0}\n', b'{"line":1}\n']
+    export_file = tmp_path / "exp.jsonl"
+    export_file.write_bytes(b"".join(raw_lines))
+
+    proof_art = build_inclusion_proof_artifact(raw_lines, "r1", 0)
+    assert proof_art["schema"] == "tc-ledger/inclusion-proof/v1"
+    proof_file = tmp_path / "proof.json"
+    proof_file.write_text(json.dumps(proof_art), encoding="utf-8")
+
+    assert verify_inclusion_proof_artifact(proof_file, export_file) is True
+    assert verify_inclusion_proof_artifact(proof_file, export_file, expected_root=proof_art["export_root"]) is True
+    assert verify_inclusion_proof_artifact(proof_file, export_file, expected_root="0" * 64) is False
+
+
+def test_cli_verify_artifact_comprehensive(tmp_path, monkeypatch):
+    raw_lines = [b'{"line":1}\n', b'{"line":2}\n']
+    export_file = tmp_path / "export.jsonl"
+    export_file.write_bytes(b"".join(raw_lines))
+
+    counts, anomaly_indices = classify_export_lines(raw_lines, "room1")
+    artifact = build_commitment_artifact(raw_lines, "room1", counts, anomaly_indices)
+    artifact_file = tmp_path / "artifact.json"
+    artifact_file.write_text(json.dumps(artifact), encoding="utf-8")
+
+    # A. verify-artifact CLI succeeds for valid artifact
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tc-ledger",
+            "verify-artifact",
+            str(export_file),
+            str(artifact_file),
+            "--expected-room",
+            "room1",
+            "--expected-root",
+            artifact["export_root"],
+        ],
+    )
+    assert main() == 0
+
+    # B. verify-artifact rejects:
+    # 1. modified export bytes
+    bad_export = tmp_path / "bad_export.jsonl"
+    bad_export.write_bytes(b'{"line":1}\n{"line":999}\n')
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(bad_export), str(artifact_file)])
+    assert main() == 1
+
+    # 2. modified artifact root
+    bad_art1 = dict(artifact, export_root="0" * 64)
+    f1 = tmp_path / "f1.json"; f1.write_text(json.dumps(bad_art1))
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(f1)])
+    assert main() == 1
+
+    # 3. modified file SHA-256
+    bad_art2 = dict(artifact, file_sha256="0" * 64)
+    f2 = tmp_path / "f2.json"; f2.write_text(json.dumps(bad_art2))
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(f2)])
+    assert main() == 1
+
+    # 4. modified line count
+    bad_art3 = dict(artifact, line_count=999)
+    f3 = tmp_path / "f3.json"; f3.write_text(json.dumps(bad_art3))
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(f3)])
+    assert main() == 1
+
+    # 5. modified byte count
+    bad_art4 = dict(artifact, byte_count=999)
+    f4 = tmp_path / "f4.json"; f4.write_text(json.dumps(bad_art4))
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(f4)])
+    assert main() == 1
+
+    # 6. modified anomaly indices
+    bad_art5 = dict(artifact, anomaly_indices=[99])
+    f5 = tmp_path / "f5.json"; f5.write_text(json.dumps(bad_art5))
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(f5)])
+    assert main() == 1
+
+    # 7. wrong expected root
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(artifact_file), "--expected-root", "0" * 64])
+    assert main() == 1
+
+    # 8. wrong expected room
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(artifact_file), "--expected-room", "wrong-room"])
+    assert main() == 1
+
+    # 9. wrong expected generation
+    monkeypatch.setattr(sys, "argv", ["tc-ledger", "verify-artifact", str(export_file), str(artifact_file), "--expected-generation", "99"])
+    assert main() == 1
+
 def test_evidence_commitment_matches_v1_vector():
     record = {
         "seq": 123456,

@@ -1,7 +1,7 @@
 [project]
 name = "tc-ledger"
 version = "0.1.0"
-description = "Add your description here"
+description = "A small, open-source evidence layer for independent verification of signed Technocore exports"
 readme = "README.md"
 authors = [
     { name = "Chandu Saikam", email = "btech21279@gmail.com" }

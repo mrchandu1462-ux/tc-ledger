@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test-python:
+    name: Python Test Suite & Vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Run Pytest
+        run: uv run pytest
+
+      - name: Validate Frozen RFC 6962 Vectors
+        run: uv run tc-ledger vectors
+
+  test-evm:
+    name: EVM Rail Tests (Foundry & TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tclk-rail-evm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: tclk-rail-evm/package-lock.json
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Run Foundry Contract Tests
+        run: forge test
+
+      - name: Run TypeScript Tests
+        run: npm test
+
+      - name: Compile TypeScript
+        run: npm run build:ts

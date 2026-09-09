@@ -648,12 +648,47 @@ def write_commitment_artifact(
 
 
 def verify_commitment_artifact(
-    artifact: dict,
-    raw_lines: list[bytes],
+    export_target,
+    artifact_target,
+    expected_root: str | bytes | None = None,
     expected_room: str | None = None,
     expected_generation: int | None = None,
 ) -> bool:
-    """Verify and re-derive an Export Commitment v1 artifact against raw export bytes."""
+    """Verify and re-derive an Export Commitment v1 artifact against raw export bytes.
+
+    Accepts either file paths (str / Path) or loaded data structures (dict, list[bytes]).
+    """
+    raw_lines = None
+    artifact = None
+
+    # Handle backwards-compatible argument ordering (artifact: dict, raw_lines: list)
+    if isinstance(export_target, dict) and isinstance(artifact_target, list):
+        artifact = export_target
+        raw_lines = artifact_target
+    elif isinstance(export_target, list) and isinstance(artifact_target, dict):
+        raw_lines = export_target
+        artifact = artifact_target
+    else:
+        # Resolve export_target
+        if isinstance(export_target, (str, Path)):
+            try:
+                with open(export_target, "rb") as f:
+                    raw_lines = f.readlines()
+            except OSError:
+                return False
+        elif isinstance(export_target, list):
+            raw_lines = export_target
+
+        # Resolve artifact_target
+        if isinstance(artifact_target, (str, Path)):
+            try:
+                with open(artifact_target, "r", encoding="utf-8") as f:
+                    artifact = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                return False
+        elif isinstance(artifact_target, dict):
+            artifact = artifact_target
+
     if not isinstance(artifact, dict) or not isinstance(raw_lines, list):
         return False
 
@@ -686,8 +721,13 @@ def verify_commitment_artifact(
         return False
 
     export_root = export_merkle_root(raw_lines).hex()
-    if artifact.get("export_root") != export_root:
+    if artifact.get("export_root", "").lower() != export_root.lower():
         return False
+
+    if expected_root is not None:
+        root_str = expected_root.hex() if isinstance(expected_root, bytes) else str(expected_root)
+        if export_root.lower() != root_str.lower():
+            return False
 
     counts, anomaly_indices = classify_export_lines(raw_lines, room)
 
@@ -762,6 +802,7 @@ def build_inclusion_proof_artifact(
     proof = export_merkle_proof(raw_lines, index)
 
     return {
+        "schema": "tc-ledger/inclusion-proof/v1",
         "version": 1,
         "profile": "tc-ledger/1",
         "room": room,
@@ -923,13 +964,42 @@ def verify_export_inclusion_proof(
 
 
 def verify_inclusion_proof_artifact(
-    artifact: dict,
-    raw_lines: list[bytes],
-    expected_generation: int | None = None,
+    proof_target,
+    export_target=None,
+    expected_root: str | bytes | None = None,
     expected_room: str | None = None,
+    expected_generation: int | None = None,
 ) -> bool:
-    """Verify an Export Inclusion Proof v1 artifact against an export file."""
+    """Verify an Export Inclusion Proof v1 artifact against an export file or path.
+
+    Accepts either file paths (str / Path) or loaded data structures.
+    """
+    artifact = None
+    raw_lines = None
+
+    if isinstance(proof_target, (str, Path)):
+        try:
+            with open(proof_target, "r", encoding="utf-8") as f:
+                artifact = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return False
+    elif isinstance(proof_target, dict):
+        artifact = proof_target
+
+    if export_target is not None:
+        if isinstance(export_target, (str, Path)):
+            try:
+                with open(export_target, "rb") as f:
+                    raw_lines = f.readlines()
+            except OSError:
+                return False
+        elif isinstance(export_target, list):
+            raw_lines = export_target
+
     if not isinstance(artifact, dict):
+        return False
+
+    if raw_lines is None:
         return False
 
     if not isinstance(raw_lines, list):
@@ -953,17 +1023,27 @@ def verify_inclusion_proof_artifact(
     if not verify_export_inclusion_proof(
         raw_lines[leaf_index],
         artifact,
+        expected_root=expected_root,
         expected_generation=expected_generation,
         expected_room=expected_room,
     ):
         return False
 
     try:
-        expected_root = bytes.fromhex(artifact.get("export_root", ""))
+        calculated_root = export_merkle_root(raw_lines)
+        art_root = bytes.fromhex(artifact.get("export_root", ""))
     except (ValueError, TypeError):
         return False
 
-    return export_merkle_root(raw_lines) == expected_root
+    if calculated_root != art_root:
+        return False
+
+    if expected_root is not None:
+        expected_bytes = bytes.fromhex(expected_root) if isinstance(expected_root, str) else expected_root
+        if calculated_root != expected_bytes:
+            return False
+
+    return True
 
 def write_inclusion_proof_artifact(
     path: str,
@@ -1033,12 +1113,23 @@ def main() -> int:
     verify_proof_parser.add_argument("--expected-generation", type=int)
     verify_proof_parser.add_argument("--expected-room")
 
+    verify_artifact_parser = subparsers.add_parser(
+        "verify-artifact",
+        help="verify and re-derive an Export Commitment v1 artifact against raw export bytes",
+    )
+    verify_artifact_parser.add_argument("export", help="path to raw export file")
+    verify_artifact_parser.add_argument("artifact", help="path to commitment artifact JSON")
+    verify_artifact_parser.add_argument("--expected-root", help="expected export Merkle root")
+    verify_artifact_parser.add_argument("--expected-room", help="expected room identifier")
+    verify_artifact_parser.add_argument("--expected-generation", type=int, help="expected export generation")
+
     verify_commit_parser = subparsers.add_parser(
         "verify-commitment",
-        help="verify and re-derive an Export Commitment v1 artifact against raw export bytes",
+        help="alias for verify-artifact",
     )
     verify_commit_parser.add_argument("export", help="path to raw export file")
     verify_commit_parser.add_argument("artifact", help="path to commitment artifact JSON")
+    verify_commit_parser.add_argument("--expected-root", help="expected export Merkle root")
     verify_commit_parser.add_argument("--expected-room", help="expected room identifier")
     verify_commit_parser.add_argument("--expected-generation", type=int, help="expected export generation")
     args = parser.parse_args()
@@ -1257,33 +1348,21 @@ def main() -> int:
 
         print("VERIFY-PROOF: INVALID", file=sys.stderr)
         return 1
-    if args.command == "verify-commitment":
-        try:
-            with open(args.export, "rb") as f:
-                raw_lines = f.readlines()
-        except OSError as exc:
-            print(f"VERIFY-COMMITMENT: FAIL: {exc}", file=sys.stderr)
-            return 1
-
-        try:
-            with open(args.artifact, "r", encoding="utf-8") as f:
-                artifact = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"VERIFY-COMMITMENT: FAIL: {exc}", file=sys.stderr)
-            return 1
-
+    if args.command in ("verify-artifact", "verify-commitment"):
         valid = verify_commitment_artifact(
-            artifact,
-            raw_lines,
+            args.export,
+            args.artifact,
+            expected_root=args.expected_root,
             expected_room=args.expected_room,
             expected_generation=args.expected_generation,
         )
 
+        label = "VERIFY-ARTIFACT" if args.command == "verify-artifact" else "VERIFY-COMMITMENT"
         if valid:
-            print("VERIFY-COMMITMENT: VALID")
+            print(f"{label}: VALID")
             return 0
 
-        print("VERIFY-COMMITMENT: INVALID", file=sys.stderr)
+        print(f"{label}: INVALID", file=sys.stderr)
         return 1
     if args.command == "verify":
         with open(args.path, "rb") as f:
