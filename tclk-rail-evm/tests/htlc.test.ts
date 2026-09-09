@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { type Address, type Hash, parseEther, zeroAddress, getAddress } from "viem";
 import {
   startAnvil,
@@ -22,7 +22,7 @@ import {
   EscrowNotFoundError,
 } from "../src/errors.js";
 import type { LockTerms } from "../src/types.js";
-import { ERC20_ABI } from "../src/abi.js";
+import { ERC20_ABI, HTLC_ABI } from "../src/abi.js";
 
 const PAYER_DID = "did:key:z6Mkffffffffffffffffffffffffffffffffffffffffffff";
 const PAYEE_DID = "did:key:z6Mkgggggggggggggggggggggggggggggggggggggggggggg";
@@ -59,6 +59,15 @@ describe("EvmHtlcRail integration tests (Anvil local node)", () => {
     // Sync simulated clock to current Anvil block timestamp
     const blockTs = await anvil.getBlockTimestamp();
     simulatedTimeMs = Number(blockTs) * 1000;
+
+    // Ensure strangerAccount has ETH for gas when performing third-party actions
+    const fundStrangerTx = await anvil.payerWallet.sendTransaction({
+      to: strangerAccount.address,
+      value: parseEther("1"),
+      account: payerAccount,
+      chain: anvil.payerWallet.chain,
+    });
+    await anvil.publicClient.waitForTransactionReceipt({ hash: fundStrangerTx });
 
     addressResolver = new StaticAddressResolver({
       [PAYER_DID]: payerAccount.address,
@@ -299,24 +308,228 @@ describe("EvmHtlcRail integration tests (Anvil local node)", () => {
   /*                       5. Duplicate & Cross Reverts                         */
   /* -------------------------------------------------------------------------- */
 
-  it("rejects duplicate claim and duplicate refund", async () => {
-    // Duplicate claim
+  it("treats duplicate valid claim and duplicate refund as idempotent", async () => {
+    // Duplicate claim is idempotent for valid secret
     const termsClaim = makeEthTerms();
     const refClaim = await payerRail.lock(termsClaim);
     await payeeRail.claim(refClaim, SECRET_HEX);
-    await expect(payeeRail.claim(refClaim, SECRET_HEX)).rejects.toThrow(
-      EscrowNotLockedError,
-    );
+    await expect(payeeRail.claim(refClaim, SECRET_HEX)).resolves.toBeUndefined();
 
-    // Duplicate refund
+    // Duplicate refund is idempotent
     const termsRefund = makeEthTerms();
     const refRefund = await payerRail.lock(termsRefund);
     const refundTs = BigInt(Math.ceil(termsRefund.refundAfterMs / 1000));
     await advanceTimeTo(refundTs);
     await payerRail.refund(refRefund);
-    await expect(payerRail.refund(refRefund)).rejects.toThrow(
+    await expect(payerRail.refund(refRefund)).resolves.toBeUndefined();
+  });
+
+  it("resolves successfully when escrow was already refunded by a third party", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    const refundTs = BigInt(Math.ceil(terms.refundAfterMs / 1000));
+    await advanceTimeTo(refundTs);
+
+    // Stranger refunds on-chain directly
+    const tx = await anvil.strangerWallet.writeContract({
+      address: anvil.htlcAddress,
+      abi: HTLC_ABI,
+      functionName: "refund",
+      args: [ref],
+      account: strangerAccount,
+      chain: anvil.strangerWallet.chain,
+    });
+    await anvil.publicClient.waitForTransactionReceipt({ hash: tx });
+
+    // Verify on-chain escrow is already Refunded
+    const onChain = await payerRail.read(ref);
+    expect(onChain?.status).toBe(3); // Refunded
+
+    // Payer calls refund -> resolves idempotently
+    await expect(payerRail.refund(ref)).resolves.toBeUndefined();
+  });
+
+  it("handles concurrent race where escrow is refunded between pre-flight read and tx execution", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    const refundTs = BigInt(Math.ceil(terms.refundAfterMs / 1000));
+    await advanceTimeTo(refundTs);
+
+    let readCallCount = 0;
+    const originalRead = payerRail.read.bind(payerRail);
+    const readSpy = vi.spyOn(payerRail, "read").mockImplementation(async (r: string) => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        // First read: pre-flight check in refund().
+        // Fetch real Locked state, but immediately execute stranger's refund on-chain
+        // before payer's writeContract runs.
+        const lockedState = await originalRead(r);
+        const tx = await anvil.strangerWallet.writeContract({
+          address: anvil.htlcAddress,
+          abi: HTLC_ABI,
+          functionName: "refund",
+          args: [ref],
+          account: strangerAccount,
+          chain: anvil.strangerWallet.chain,
+        });
+        await anvil.publicClient.waitForTransactionReceipt({ hash: tx });
+        return lockedState;
+      }
+      // Subsequent reads (inside catch block) see the actual Refunded state
+      return originalRead(r);
+    });
+
+    try {
+      await expect(payerRail.refund(ref)).resolves.toBeUndefined();
+      expect(readCallCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it("fails refund when escrow is claimed between pre-flight read and tx execution", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    let readCallCount = 0;
+    const originalRead = payerRail.read.bind(payerRail);
+    const readSpy = vi.spyOn(payerRail, "read").mockImplementation(async (r: string) => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        // Pre-flight check in refund().
+        // Stranger claims on-chain with valid secret before refund tx executes
+        const tx = await anvil.strangerWallet.writeContract({
+          address: anvil.htlcAddress,
+          abi: HTLC_ABI,
+          functionName: "claim",
+          args: [ref, SECRET_HEX],
+          account: strangerAccount,
+          chain: anvil.strangerWallet.chain,
+        });
+        await anvil.publicClient.waitForTransactionReceipt({ hash: tx });
+
+        // Advance time so refund pre-flight timestamp check passes
+        const refundTs = BigInt(Math.ceil(terms.refundAfterMs / 1000));
+        await advanceTimeTo(refundTs);
+
+        // Return synthetic Locked state to simulate pre-flight having passed before claim
+        const actualState = await originalRead(r);
+        return {
+          ...actualState!,
+          status: 1, // Locked
+          refundTimestamp: BigInt(Math.floor(simulatedTimeMs / 1000) - 10),
+        };
+      }
+      // Recheck in catch block returns actual on-chain state (Claimed = 2)
+      return originalRead(r);
+    });
+
+    try {
+      await expect(payerRail.refund(ref)).rejects.toThrow();
+      expect(readCallCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it("resolves successfully when escrow was already claimed by a third party with valid secret", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    // Stranger claims on-chain directly
+    const tx = await anvil.strangerWallet.writeContract({
+      address: anvil.htlcAddress,
+      abi: HTLC_ABI,
+      functionName: "claim",
+      args: [ref, SECRET_HEX],
+      account: strangerAccount,
+      chain: anvil.strangerWallet.chain,
+    });
+    await anvil.publicClient.waitForTransactionReceipt({ hash: tx });
+
+    // Verify on-chain escrow is already Claimed
+    const onChain = await payeeRail.read(ref);
+    expect(onChain?.status).toBe(2); // Claimed
+
+    // Payee calls claim with the valid secret -> resolves idempotently
+    await expect(payeeRail.claim(ref, SECRET_HEX)).resolves.toBeUndefined();
+  });
+
+  it("rejects claim with invalid secret on an already-claimed escrow", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    // Stranger claims on-chain with valid secret
+    const tx = await anvil.strangerWallet.writeContract({
+      address: anvil.htlcAddress,
+      abi: HTLC_ABI,
+      functionName: "claim",
+      args: [ref, SECRET_HEX],
+      account: strangerAccount,
+      chain: anvil.strangerWallet.chain,
+    });
+    await anvil.publicClient.waitForTransactionReceipt({ hash: tx });
+
+    // Payee calls claim with wrong secret -> rejects with InvalidSecretError
+    await expect(payeeRail.claim(ref, WRONG_SECRET_HEX)).rejects.toThrow(
+      InvalidSecretError,
+    );
+  });
+
+  it("rejects claim on an escrow that has already been refunded", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    const refundTs = BigInt(Math.ceil(terms.refundAfterMs / 1000));
+    await advanceTimeTo(refundTs);
+    await payerRail.refund(ref);
+
+    // Verify on-chain escrow is Refunded
+    const onChain = await payeeRail.read(ref);
+    expect(onChain?.status).toBe(3); // Refunded
+
+    // Payee calls claim with valid secret -> must reject
+    await expect(payeeRail.claim(ref, SECRET_HEX)).rejects.toThrow(
       EscrowNotLockedError,
     );
+  });
+
+  it("handles concurrent race where escrow is claimed between pre-flight read and tx execution", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    let readCallCount = 0;
+    const originalRead = payeeRail.read.bind(payeeRail);
+    const readSpy = vi.spyOn(payeeRail, "read").mockImplementation(async (r: string) => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        // First read: pre-flight check in claim().
+        // Fetch real Locked state, but immediately execute stranger's claim on-chain
+        // before payee's writeContract runs.
+        const lockedState = await originalRead(r);
+        const tx = await anvil.strangerWallet.writeContract({
+          address: anvil.htlcAddress,
+          abi: HTLC_ABI,
+          functionName: "claim",
+          args: [ref, SECRET_HEX],
+          account: strangerAccount,
+          chain: anvil.strangerWallet.chain,
+        });
+        await anvil.publicClient.waitForTransactionReceipt({ hash: tx });
+        return lockedState;
+      }
+      // Subsequent reads (e.g. inside catch block) see the actual Claimed state
+      return originalRead(r);
+    });
+
+    try {
+      await expect(payeeRail.claim(ref, SECRET_HEX)).resolves.toBeUndefined();
+      expect(readCallCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 
   it("rejects refund after claim and rejects claim after refund", async () => {

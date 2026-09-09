@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 from dataclasses import dataclass
@@ -99,11 +100,17 @@ def verify_signed_record(record: dict, room: str) -> VerificationResult:
 
     nonce = record["nonce"]
 
-    if isinstance(nonce, bool) or not isinstance(nonce, int):
-        raise MalformedRecord("nonce must be an integer")
+    if isinstance(nonce, bool):
+        raise MalformedRecord("nonce must not be a boolean")
 
-    if nonce < 0 or len(str(nonce)) > MAX_NONCE_DIGITS:
-        raise MalformedRecord("nonce outside supported range")
+    if isinstance(nonce, int):
+        if nonce < 0 or len(str(nonce)) > MAX_NONCE_DIGITS:
+            raise MalformedRecord("nonce outside supported range")
+    elif isinstance(nonce, str):
+        if not re.fullmatch(r"[0-9]{1,19}", nonce):
+            raise MalformedRecord("nonce string must be 1-19 ASCII digits")
+    else:
+        raise MalformedRecord("nonce must be an integer or digit string")
 
     if not isinstance(record["sig"], str):
         raise MalformedRecord("sig must be a string")
@@ -256,6 +263,105 @@ def verify_merkle_proof(
 
     return current == expected_root
 
+
+def _build_export_levels(raw_lines: list[bytes]) -> list[list[bytes]]:
+    """Build all Merkle levels for raw export lines."""
+    if not isinstance(raw_lines, list):
+        raise TypeError("raw_lines must be a list")
+
+    if not raw_lines:
+        return [[hashlib.sha256(b"").digest()]]
+
+    level = []
+
+    for raw_line in raw_lines:
+        if not isinstance(raw_line, bytes):
+            raise TypeError("each raw line must be bytes")
+        level.append(export_leaf_hash(raw_line))
+
+    levels = [level]
+
+    while len(level) > 1:
+        next_level = []
+
+        for index in range(0, len(level), 2):
+            left = level[index]
+
+            if index + 1 >= len(level):
+                next_level.append(left)
+            else:
+                right = level[index + 1]
+                next_level.append(node_hash(left, right))
+
+        level = next_level
+        levels.append(level)
+
+    return levels
+
+def export_merkle_proof(
+    raw_lines: list[bytes],
+    index: int,
+) -> list[tuple[bytes, str]]:
+    """Generate an Export Merkle v1 inclusion proof."""
+    if not isinstance(index, int) or isinstance(index, bool):
+        raise TypeError("index must be an integer")
+
+    if index < 0 or index >= len(raw_lines):
+        raise IndexError("index outside export line list")
+
+    levels = _build_export_levels(raw_lines)
+    proof: list[tuple[bytes, str]] = []
+    current_index = index
+
+    for level in levels[:-1]:
+        if current_index % 2 == 0:
+            sibling_index = current_index + 1
+
+            if sibling_index < len(level):
+                proof.append((level[sibling_index], "right"))
+        else:
+            sibling_index = current_index - 1
+            proof.append((level[sibling_index], "left"))
+
+        current_index //= 2
+
+    return proof
+
+def verify_export_merkle_proof(
+    raw_line_bytes: bytes,
+    proof: list[tuple[bytes, str]],
+    expected_root: bytes,
+) -> bool:
+    """Verify an Export Merkle v1 inclusion proof."""
+    if not isinstance(raw_line_bytes, bytes):
+        raise TypeError("raw_line_bytes must be bytes")
+
+    if not isinstance(expected_root, bytes):
+        raise TypeError("expected_root must be bytes")
+
+    if len(expected_root) != 32:
+        raise ValueError("expected_root must be 32 bytes")
+
+    if not isinstance(proof, list):
+        raise TypeError("proof must be a list")
+
+    current = export_leaf_hash(raw_line_bytes)
+
+    for sibling, position in proof:
+        if not isinstance(sibling, bytes):
+            raise TypeError("proof sibling hash must be bytes")
+
+        if len(sibling) != 32:
+            raise ValueError("proof sibling hash must be 32 bytes")
+
+        if position == "left":
+            current = node_hash(sibling, current)
+        elif position == "right":
+            current = node_hash(current, sibling)
+        else:
+            raise ValueError("proof position must be 'left' or 'right'")
+
+    return current == expected_root
 
 def export_merkle_root(raw_lines: list[bytes]) -> bytes:
     """Build an Export Commitment v1 Merkle root from captured lines."""
@@ -540,6 +646,282 @@ def write_commitment_artifact(
         )
         handle.write("\n")
 
+
+def expected_proof_directions(tree_size: int, leaf_index: int) -> list[str]:
+    """Compute expected audit path directions for a leaf in a Merkle tree."""
+    if not isinstance(tree_size, int) or isinstance(tree_size, bool):
+        raise TypeError("tree_size must be an integer")
+    if not isinstance(leaf_index, int) or isinstance(leaf_index, bool):
+        raise TypeError("leaf_index must be an integer")
+
+    if tree_size < 1:
+        raise ValueError("tree_size must be positive")
+    if leaf_index < 0 or leaf_index >= tree_size:
+        raise IndexError("leaf_index outside tree bounds")
+
+    directions = []
+    current_index = leaf_index
+    level_size = tree_size
+
+    while level_size > 1:
+        if current_index % 2 == 0:
+            if current_index + 1 < level_size:
+                directions.append("right")
+        else:
+            directions.append("left")
+
+        current_index //= 2
+        level_size = (level_size + 1) // 2
+
+    return directions
+
+
+def build_inclusion_proof_artifact(
+    raw_lines: list[bytes],
+    room: str,
+    index: int,
+    export_generation: int = 0,
+) -> dict:
+    """Build an Export Inclusion Proof v1 artifact."""
+    if not isinstance(raw_lines, list):
+        raise TypeError("raw_lines must be a list")
+
+    if not isinstance(room, str):
+        raise TypeError("room must be a string")
+
+    if not isinstance(index, int) or isinstance(index, bool):
+        raise TypeError("index must be an integer")
+
+    if not isinstance(export_generation, int) or isinstance(export_generation, bool):
+        raise TypeError("export_generation must be an integer")
+
+    if export_generation < 0:
+        raise ValueError("export_generation must be non-negative")
+
+    if index < 0 or index >= len(raw_lines):
+        raise IndexError("index outside export line list")
+
+    proof = export_merkle_proof(raw_lines, index)
+
+    return {
+        "version": 1,
+        "profile": "tc-ledger/1",
+        "room": room,
+        "export_generation": export_generation,
+        "leaf_index": index,
+        "tree_size": len(raw_lines),
+        "leaf_hash": export_leaf_hash(raw_lines[index]).hex(),
+        "export_root": export_merkle_root(raw_lines).hex(),
+        "audit_path": [
+            {
+                "position": position,
+                "sibling_hash": sibling.hex(),
+            }
+            for sibling, position in proof
+        ],
+    }
+
+
+def verify_export_inclusion_proof(
+    raw_line_bytes: bytes | str,
+    artifact: dict,
+    expected_root: bytes | str | None = None,
+    expected_generation: int | None = None,
+    expected_room: str | None = None,
+) -> bool:
+    """Independently verify an Export Inclusion Proof v1 artifact from record bytes.
+
+    Does not require server state or the full export file.
+    """
+    if isinstance(raw_line_bytes, str):
+        raw_line_bytes = raw_line_bytes.encode("utf-8")
+
+    if not isinstance(raw_line_bytes, (bytes, bytearray)):
+        return False
+
+    if not isinstance(artifact, dict):
+        return False
+
+    if artifact.get("version") != 1:
+        return False
+
+    if artifact.get("profile") != "tc-ledger/1":
+        return False
+
+    room = artifact.get("room")
+    if not isinstance(room, str) or not room:
+        return False
+
+    if expected_room is not None and room != expected_room:
+        return False
+
+    leaf_index = artifact.get("leaf_index")
+    tree_size = artifact.get("tree_size")
+    artifact_generation = artifact.get("export_generation")
+
+    if not isinstance(leaf_index, int) or isinstance(leaf_index, bool):
+        return False
+
+    if not isinstance(tree_size, int) or isinstance(tree_size, bool):
+        return False
+
+    if tree_size < 1 or leaf_index < 0 or leaf_index >= tree_size:
+        return False
+
+    if artifact_generation is not None:
+        if not isinstance(artifact_generation, int) or isinstance(artifact_generation, bool):
+            return False
+        if artifact_generation < 0:
+            return False
+
+    if expected_generation is not None:
+        if not isinstance(expected_generation, int) or isinstance(expected_generation, bool):
+            return False
+        if artifact_generation != expected_generation:
+            return False
+
+    leaf_hash_hex = artifact.get("leaf_hash")
+    export_root_hex = artifact.get("export_root")
+    audit_path = artifact.get("audit_path")
+
+    if not isinstance(leaf_hash_hex, str) or not isinstance(export_root_hex, str):
+        return False
+
+    if not isinstance(audit_path, list):
+        return False
+
+    try:
+        artifact_leaf_hash = bytes.fromhex(leaf_hash_hex)
+        artifact_root = bytes.fromhex(export_root_hex)
+    except (ValueError, TypeError):
+        return False
+
+    if len(artifact_leaf_hash) != 32 or len(artifact_root) != 32:
+        return False
+
+    # Verify actual leaf hash matches artifact leaf hash
+    actual_leaf_hash = export_leaf_hash(raw_line_bytes)
+    if actual_leaf_hash != artifact_leaf_hash:
+        return False
+
+    # Verify audit_path directions and length match expected tree shape
+    try:
+        expected_dirs = expected_proof_directions(tree_size, leaf_index)
+    except (IndexError, ValueError):
+        return False
+
+    if len(audit_path) != len(expected_dirs):
+        return False
+
+    proof: list[tuple[bytes, str]] = []
+    for item, expected_dir in zip(audit_path, expected_dirs):
+        if not isinstance(item, dict):
+            return False
+
+        position = item.get("position")
+        sibling_hash_hex = item.get("sibling_hash")
+
+        if position != expected_dir:
+            return False
+
+        if not isinstance(sibling_hash_hex, str):
+            return False
+
+        try:
+            sibling_hash = bytes.fromhex(sibling_hash_hex)
+        except (ValueError, TypeError):
+            return False
+
+        if len(sibling_hash) != 32:
+            return False
+
+        proof.append((sibling_hash, position))
+
+    if not verify_export_merkle_proof(
+        raw_line_bytes,
+        proof,
+        artifact_root,
+    ):
+        return False
+
+    if expected_root is not None:
+        if isinstance(expected_root, str):
+            try:
+                expected_root_bytes = bytes.fromhex(expected_root)
+            except (ValueError, TypeError):
+                return False
+        elif isinstance(expected_root, bytes):
+            expected_root_bytes = expected_root
+        else:
+            return False
+
+        if len(expected_root_bytes) != 32:
+            return False
+
+        if artifact_root != expected_root_bytes:
+            return False
+
+    return True
+
+
+def verify_inclusion_proof_artifact(
+    artifact: dict,
+    raw_lines: list[bytes],
+    expected_generation: int | None = None,
+    expected_room: str | None = None,
+) -> bool:
+    """Verify an Export Inclusion Proof v1 artifact against an export file."""
+    if not isinstance(artifact, dict):
+        return False
+
+    if not isinstance(raw_lines, list):
+        return False
+
+    tree_size = artifact.get("tree_size")
+    leaf_index = artifact.get("leaf_index")
+
+    if not isinstance(tree_size, int) or isinstance(tree_size, bool):
+        return False
+
+    if not isinstance(leaf_index, int) or isinstance(leaf_index, bool):
+        return False
+
+    if tree_size != len(raw_lines):
+        return False
+
+    if leaf_index < 0 or leaf_index >= len(raw_lines):
+        return False
+
+    if not verify_export_inclusion_proof(
+        raw_lines[leaf_index],
+        artifact,
+        expected_generation=expected_generation,
+        expected_room=expected_room,
+    ):
+        return False
+
+    try:
+        expected_root = bytes.fromhex(artifact.get("export_root", ""))
+    except (ValueError, TypeError):
+        return False
+
+    return export_merkle_root(raw_lines) == expected_root
+
+def write_inclusion_proof_artifact(
+    path: str,
+    artifact: dict,
+) -> None:
+    """Write a deterministic Export Inclusion Proof v1 artifact."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(
+            artifact,
+            handle,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        handle.write("\n")
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify signed records from a Technocore room export."
@@ -566,6 +948,32 @@ def main() -> int:
         help="validate frozen v1 test vectors",
     )
 
+    prove_parser = subparsers.add_parser(
+        "prove",
+        help="generate an Export Inclusion Proof v1 artifact",
+    )
+    prove_parser.add_argument("path")
+    prove_parser.add_argument("--room", required=True)
+    prove_parser.add_argument("--leaf-index", required=True, type=int)
+    prove_parser.add_argument(
+        "--generation",
+        "--export-generation",
+        dest="export_generation",
+        type=int,
+        default=0,
+    )
+    prove_parser.add_argument("--output")
+
+    verify_proof_parser = subparsers.add_parser(
+        "verify-proof",
+        help="verify an Export Inclusion Proof v1 artifact",
+    )
+    verify_proof_parser.add_argument("path")
+    verify_proof_parser.add_argument("--export")
+    verify_proof_parser.add_argument("--record")
+    verify_proof_parser.add_argument("--expected-root")
+    verify_proof_parser.add_argument("--expected-generation", type=int)
+    verify_proof_parser.add_argument("--expected-room")
     args = parser.parse_args()
     if args.command == "vectors":
         vectors_path = (
@@ -676,6 +1084,31 @@ def main() -> int:
             print(f"C3 vectors: FAIL: {exc}", file=sys.stderr)
             return 3
 
+    if args.command == "prove":
+        with open(args.path, "rb") as f:
+            raw_lines = f.readlines()
+
+        artifact = build_inclusion_proof_artifact(
+            raw_lines,
+            args.room,
+            args.leaf_index,
+            export_generation=args.export_generation,
+        )
+
+        if args.output:
+            write_inclusion_proof_artifact(args.output, artifact)
+            print(f"Inclusion proof artifact: {args.output}")
+        else:
+            print(
+                json.dumps(
+                    artifact,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
+            )
+
+        return 0
     if args.command == "commit":
         with open(args.path, "rb") as f:
             raw_lines = f.readlines()
@@ -708,6 +1141,55 @@ def main() -> int:
             print(f"Commitment artifact: {args.output}")
 
         return 0
+    if args.command == "verify-proof":
+        try:
+            artifact = json.loads(
+                Path(args.path).read_text(encoding="utf-8")
+            )
+
+            if args.record:
+                record_bytes = Path(args.record).read_bytes()
+                valid = verify_export_inclusion_proof(
+                    record_bytes,
+                    artifact,
+                    expected_root=args.expected_root,
+                    expected_generation=args.expected_generation,
+                    expected_room=args.expected_room,
+                )
+            elif args.export:
+                with open(args.export, "rb") as f:
+                    raw_lines = f.readlines()
+
+                valid = verify_inclusion_proof_artifact(
+                    artifact,
+                    raw_lines,
+                    expected_generation=args.expected_generation,
+                    expected_room=args.expected_room,
+                )
+                if valid and args.expected_root:
+                    if artifact.get("export_root", "").lower() != args.expected_root.lower():
+                        valid = False
+            else:
+                print("Error: either --record or --export must be provided", file=sys.stderr)
+                return 2
+
+        except (
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+        ) as exc:
+            print(f"VERIFY-PROOF: FAIL: {exc}", file=sys.stderr)
+            return 3
+
+        if valid:
+            print("VERIFY-PROOF: VALID")
+            return 0
+
+        print("VERIFY-PROOF: INVALID", file=sys.stderr)
+        return 1
     if args.command == "verify":
         with open(args.path, "rb") as f:
             raw_lines = f.readlines()

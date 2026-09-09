@@ -180,6 +180,14 @@ export class EvmHtlcRail implements SettlementRail {
     if (!held || held.status === EscrowStatus.None) {
       throw new EscrowNotFoundError(ref);
     }
+
+    if (held.status === EscrowStatus.Claimed) {
+      if (computeSha256(secretHash) !== held.hashlock.toLowerCase()) {
+        throw new InvalidSecretError();
+      }
+      return;
+    }
+
     if (held.status !== EscrowStatus.Locked) {
       throw new EscrowNotLockedError(ref, EscrowStatus[held.status]);
     }
@@ -199,16 +207,28 @@ export class EvmHtlcRail implements SettlementRail {
       throw new EvmRailError("account required for claim transaction");
     }
 
-    const hash = await wallet.writeContract({
-      address: this.htlcAddress,
-      abi: HTLC_ABI,
-      functionName: "claim",
-      args: [contractId, secretHash],
-      account,
-      chain: wallet.chain,
-    });
+    try {
+      const hash = await wallet.writeContract({
+        address: this.htlcAddress,
+        abi: HTLC_ABI,
+        functionName: "claim",
+        args: [contractId, secretHash],
+        account,
+        chain: wallet.chain,
+      });
 
-    await this.publicClient.waitForTransactionReceipt({ hash });
+      await this.publicClient.waitForTransactionReceipt({ hash });
+    } catch (err) {
+      const recheck = await this.read(contractId);
+      if (
+        recheck &&
+        recheck.status === EscrowStatus.Claimed &&
+        computeSha256(secretHash) === recheck.hashlock.toLowerCase()
+      ) {
+        return;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -223,6 +243,9 @@ export class EvmHtlcRail implements SettlementRail {
     const held = await this.read(contractId);
     if (!held || held.status === EscrowStatus.None) {
       throw new EscrowNotFoundError(ref);
+    }
+    if (held.status === EscrowStatus.Refunded) {
+      return;
     }
     if (held.status !== EscrowStatus.Locked) {
       throw new EscrowNotLockedError(ref, EscrowStatus[held.status]);
@@ -239,16 +262,24 @@ export class EvmHtlcRail implements SettlementRail {
       throw new EvmRailError("account required for refund transaction");
     }
 
-    const hash = await wallet.writeContract({
-      address: this.htlcAddress,
-      abi: HTLC_ABI,
-      functionName: "refund",
-      args: [contractId],
-      account,
-      chain: wallet.chain,
-    });
+    try {
+      const hash = await wallet.writeContract({
+        address: this.htlcAddress,
+        abi: HTLC_ABI,
+        functionName: "refund",
+        args: [contractId],
+        account,
+        chain: wallet.chain,
+      });
 
-    await this.publicClient.waitForTransactionReceipt({ hash });
+      await this.publicClient.waitForTransactionReceipt({ hash });
+    } catch (err) {
+      const recheck = await this.read(contractId);
+      if (recheck && recheck.status === EscrowStatus.Refunded) {
+        return;
+      }
+      throw err;
+    }
   }
 
   /**

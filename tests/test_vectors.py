@@ -3,6 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from tc_ledger.ledger import export_merkle_proof, verify_export_merkle_proof
+
 
 ROOT = Path(__file__).resolve().parents[1]
 VECTORS = ROOT / "vectors" / "vectors.json"
@@ -129,40 +131,23 @@ def test_synthetic_export_proof():
         for item in vector["lines"]
     ]
 
-    proof = vector["proof"]
-    index = proof["leaf_index"]
-    levels = reference_levels(lines)
+    proof_vector = vector["proof"]
+    index = proof_vector["leaf_index"]
 
-    current = leaf_hash(lines[index])
-    path_index = index
+    proof = export_merkle_proof(lines, index)
 
-    audit_levels = [None] + levels
+    assert [
+        sibling.hex()
+        for sibling, _position in proof
+    ] == proof_vector["audit_path"]
 
-    for level_number, level in enumerate(audit_levels):
-        if level_number == 0:
-            sibling = leaf_hash(lines[path_index ^ 1])
-        else:
-            sibling_index = path_index ^ 1
-            if sibling_index >= len(level):
-                path_index //= 2
-                continue
-            sibling = level[sibling_index]
+    expected_root = bytes.fromhex(vector["root"])
 
-        if path_index % 2 == 0:
-            current = node_hash(current, sibling)
-        else:
-            current = node_hash(sibling, current)
-
-        path_index //= 2
-
-    expected_path = [
-        leaf_hash(lines[1]).hex(),
-        levels[0][1].hex(),
-        levels[1][1].hex(),
-    ]
-
-    assert proof["audit_path"] == expected_path
-    assert current.hex() == vector["root"]
+    assert verify_export_merkle_proof(
+        lines[index],
+        proof,
+        expected_root,
+    )
 
 
 def test_synthetic_evidence_ids_are_frozen():
