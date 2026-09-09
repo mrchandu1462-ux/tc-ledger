@@ -647,6 +647,64 @@ def write_commitment_artifact(
         handle.write("\n")
 
 
+def verify_commitment_artifact(
+    artifact: dict,
+    raw_lines: list[bytes],
+    expected_room: str | None = None,
+    expected_generation: int | None = None,
+) -> bool:
+    """Verify and re-derive an Export Commitment v1 artifact against raw export bytes."""
+    if not isinstance(artifact, dict) or not isinstance(raw_lines, list):
+        return False
+
+    if artifact.get("version") != 1:
+        return False
+
+    if artifact.get("profile") != "tc-ledger/1":
+        return False
+
+    room = artifact.get("room")
+    if not isinstance(room, str) or not room:
+        return False
+
+    if expected_room is not None and room != expected_room:
+        return False
+
+    if expected_generation is not None:
+        art_gen = artifact.get("export_generation", artifact.get("generation"))
+        if art_gen != expected_generation:
+            return False
+
+    if artifact.get("line_count") != len(raw_lines):
+        return False
+
+    if artifact.get("byte_count") != sum(len(line) for line in raw_lines):
+        return False
+
+    file_sha256 = hashlib.sha256(b"".join(raw_lines)).hexdigest()
+    if artifact.get("file_sha256") != file_sha256:
+        return False
+
+    export_root = export_merkle_root(raw_lines).hex()
+    if artifact.get("export_root") != export_root:
+        return False
+
+    counts, anomaly_indices = classify_export_lines(raw_lines, room)
+
+    verification = artifact.get("verification")
+    if not isinstance(verification, dict):
+        return False
+
+    for key in ("VALID", "INVALID", "UNSIGNED", "MALFORMED", "UNSUPPORTED_KEY"):
+        if verification.get(key) != counts.get(key, 0):
+            return False
+
+    if artifact.get("anomaly_indices") != list(anomaly_indices):
+        return False
+
+    return True
+
+
 def expected_proof_directions(tree_size: int, leaf_index: int) -> list[str]:
     """Compute expected audit path directions for a leaf in a Merkle tree."""
     if not isinstance(tree_size, int) or isinstance(tree_size, bool):
@@ -974,6 +1032,15 @@ def main() -> int:
     verify_proof_parser.add_argument("--expected-root")
     verify_proof_parser.add_argument("--expected-generation", type=int)
     verify_proof_parser.add_argument("--expected-room")
+
+    verify_commit_parser = subparsers.add_parser(
+        "verify-commitment",
+        help="verify and re-derive an Export Commitment v1 artifact against raw export bytes",
+    )
+    verify_commit_parser.add_argument("export", help="path to raw export file")
+    verify_commit_parser.add_argument("artifact", help="path to commitment artifact JSON")
+    verify_commit_parser.add_argument("--expected-room", help="expected room identifier")
+    verify_commit_parser.add_argument("--expected-generation", type=int, help="expected export generation")
     args = parser.parse_args()
     if args.command == "vectors":
         vectors_path = (
@@ -1189,6 +1256,34 @@ def main() -> int:
             return 0
 
         print("VERIFY-PROOF: INVALID", file=sys.stderr)
+        return 1
+    if args.command == "verify-commitment":
+        try:
+            with open(args.export, "rb") as f:
+                raw_lines = f.readlines()
+        except OSError as exc:
+            print(f"VERIFY-COMMITMENT: FAIL: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            with open(args.artifact, "r", encoding="utf-8") as f:
+                artifact = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"VERIFY-COMMITMENT: FAIL: {exc}", file=sys.stderr)
+            return 1
+
+        valid = verify_commitment_artifact(
+            artifact,
+            raw_lines,
+            expected_room=args.expected_room,
+            expected_generation=args.expected_generation,
+        )
+
+        if valid:
+            print("VERIFY-COMMITMENT: VALID")
+            return 0
+
+        print("VERIFY-COMMITMENT: INVALID", file=sys.stderr)
         return 1
     if args.command == "verify":
         with open(args.path, "rb") as f:

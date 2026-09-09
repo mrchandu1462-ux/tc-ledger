@@ -14,6 +14,7 @@ from tc_ledger.ledger import (
     verify_signed_record,
     verify_export,
     build_commitment_artifact,
+    verify_commitment_artifact,
     classify_export_lines,
     evidence_commitment,
     leaf_hash,
@@ -326,6 +327,104 @@ def test_build_commitment_artifact_preserves_exact_bytes():
     assert artifact["line_count"] == 2
     assert artifact["byte_count"] == 31
     assert artifact["file_sha256"] == expected
+
+
+
+def test_verify_commitment_artifact_re_derivation_success(tmp_path):
+    raw_lines = [
+        b'{"text":"first"}\n',
+        b'{"text":"second"}\n',
+    ]
+    counts, anomaly_indices = classify_export_lines(raw_lines, "test-room")
+    artifact = build_commitment_artifact(raw_lines, "test-room", counts, anomaly_indices)
+    assert verify_commitment_artifact(artifact, raw_lines) is True
+    assert verify_commitment_artifact(artifact, raw_lines, expected_room="test-room") is True
+
+
+def test_verify_commitment_artifact_detects_tampering():
+    raw_lines = [
+        b'{"text":"first"}\n',
+        b'{"text":"second"}\n',
+    ]
+    counts = {
+        "VALID": 0,
+        "INVALID": 0,
+        "UNSIGNED": 2,
+        "MALFORMED": 0,
+        "UNSUPPORTED_KEY": 0,
+    }
+    anomaly_indices = [0, 1]
+    artifact = build_commitment_artifact(raw_lines, "test-room", counts, anomaly_indices)
+
+    # Tampered line_count
+    bad1 = dict(artifact, line_count=999)
+    assert verify_commitment_artifact(bad1, raw_lines) is False
+
+    # Tampered byte_count
+    bad2 = dict(artifact, byte_count=999)
+    assert verify_commitment_artifact(bad2, raw_lines) is False
+
+    # Tampered file_sha256
+    bad3 = dict(artifact, file_sha256="0" * 64)
+    assert verify_commitment_artifact(bad3, raw_lines) is False
+
+    # Tampered export_root
+    bad4 = dict(artifact, export_root="0" * 64)
+    assert verify_commitment_artifact(bad4, raw_lines) is False
+
+    # Tampered verification counts
+    bad5 = dict(artifact, verification=dict(counts, VALID=5))
+    assert verify_commitment_artifact(bad5, raw_lines) is False
+
+    # Tampered anomaly_indices
+    bad6 = dict(artifact, anomaly_indices=[])
+    assert verify_commitment_artifact(bad6, raw_lines) is False
+
+    # Expected room mismatch
+    assert verify_commitment_artifact(artifact, raw_lines, expected_room="wrong-room") is False
+
+    # Missing/invalid fields
+    assert verify_commitment_artifact({}, raw_lines) is False
+    assert verify_commitment_artifact(artifact, []) is False
+
+
+def test_cli_verify_commitment_lifecycle(tmp_path, monkeypatch):
+    raw_lines = [b'{"line":1}\n', b'{"line":2}\n']
+    export_file = tmp_path / "export.jsonl"
+    export_file.write_bytes(b"".join(raw_lines))
+
+    counts, anomaly_indices = classify_export_lines(raw_lines, "room1")
+    artifact = build_commitment_artifact(raw_lines, "room1", counts, anomaly_indices)
+    artifact_file = tmp_path / "artifact.json"
+    artifact_file.write_text(json.dumps(artifact), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tc-ledger",
+            "verify-commitment",
+            str(export_file),
+            str(artifact_file),
+            "--expected-room",
+            "room1",
+        ],
+    )
+    assert main() == 0
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tc-ledger",
+            "verify-commitment",
+            str(export_file),
+            str(artifact_file),
+            "--expected-room",
+            "wrong-room",
+        ],
+    )
+    assert main() == 1
 
 def test_evidence_commitment_matches_v1_vector():
     record = {
