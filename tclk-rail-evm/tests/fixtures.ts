@@ -23,7 +23,7 @@ const erc20Artifact = JSON.parse(
   readFileSync(new URL("../out/MockERC20.sol/MockERC20.json", import.meta.url), "utf8"),
 );
 
-export const ANVIL_PATH = "C:\\Users\\mrcha\\.foundry\\bin\\anvil.exe";
+export const ANVIL_PATH = process.env.ANVIL_PATH ?? "anvil";
 
 // Default pre-funded Anvil accounts
 export const PAYER_PRIVATE_KEY =
