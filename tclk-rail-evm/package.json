@@ -11,7 +11,8 @@
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:contracts && npm run build:ts",
     "test": "vitest run",
-    "demo:archive": "node scripts/demo_deal_archive.js"
+    "demo:archive": "node scripts/demo_deal_archive.js",
+    "wallet": "node dist/app/server.js"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",

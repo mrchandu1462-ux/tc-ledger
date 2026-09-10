@@ -134,3 +134,17 @@ export {
   DealStateMismatchError,
   UnauthorizedActorError,
 } from "./app/orchestrator.js";
+export {
+  DealWalletServer,
+  startDealWalletServer,
+  toSafeDealDto,
+  renderDashboardHtml,
+  type DealWalletServerConfig,
+  type SafeDealDto,
+  type SafeSessionMetadataDto,
+  type SafeBalanceDto,
+  type SafeDealsResponseDto,
+  type SafeArchivesResponseDto,
+  type HealthResponseDto,
+  type CliOptions,
+} from "./app/server.js";
