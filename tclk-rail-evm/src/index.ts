@@ -103,3 +103,23 @@ export {
   TcLedgerArchiver,
   verifyDealArchive,
 } from "./archiver.js";
+export {
+  type SessionRole,
+  type WalletSessionConfig,
+  type SessionMetadata,
+  type TokenBalanceInfo,
+  type SessionBalance,
+  type AppConfig,
+  type ContactEntry,
+  type ArchivedDealSummary,
+  type ArchiveStoreIndex,
+  SessionError,
+  InsecureDemoAccountError,
+  ArchiveStoreError,
+  TamperedArchiveError,
+  ArchiveNotFoundError,
+  InvalidContactError,
+  InsecureConfigError,
+} from "./app/types.js";
+export { WalletSession } from "./app/session.js";
+export { ArchiveStore } from "./app/store.js";

@@ -10,3 +10,6 @@ dist/
 # OS & Logs
 .DS_Store
 *.log
+
+# Technocore Deal Wallet local store
+.deal-wallet/
