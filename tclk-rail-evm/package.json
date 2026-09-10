@@ -10,11 +10,13 @@
     "build:contracts": "forge build",
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:contracts && npm run build:ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "demo:archive": "node scripts/demo_deal_archive.js"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
+    "@scure/base": "^1.2.6",
     "viem": "^2.38.0"
   },
   "devDependencies": {
