@@ -20,6 +20,7 @@ import {
   InvalidSecretError,
   EscrowNotLockedError,
   EscrowNotFoundError,
+  InvalidTermsError,
 } from "../src/errors.js";
 import type { LockTerms } from "../src/types.js";
 import { ERC20_ABI, HTLC_ABI } from "../src/abi.js";
@@ -214,6 +215,22 @@ describe("EvmHtlcRail integration tests (Anvil local node)", () => {
     const ref = await payerRail.lock(terms);
 
     const tampered = { ...terms, refundAfterMs: terms.refundAfterMs + 5000 };
+    expect(await payeeRail.verifyLock(tampered, ref)).toBe(false);
+  });
+
+  it("verifyLock returns false when claimByMs equals refundAfterMs", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    const tampered = { ...terms, claimByMs: terms.refundAfterMs };
+    expect(await payeeRail.verifyLock(tampered, ref)).toBe(false);
+  });
+
+  it("verifyLock returns false when claimByMs exceeds refundAfterMs", async () => {
+    const terms = makeEthTerms();
+    const ref = await payerRail.lock(terms);
+
+    const tampered = { ...terms, claimByMs: terms.refundAfterMs + 1000 };
     expect(await payeeRail.verifyLock(tampered, ref)).toBe(false);
   });
 
@@ -563,6 +580,24 @@ describe("EvmHtlcRail integration tests (Anvil local node)", () => {
     await advanceTimeTo(refundTs);
 
     await expect(payerRail.lock(terms)).rejects.toThrow(RefundWindowOpenError);
+  });
+
+  it("rejects lock when claimByMs equals refundAfterMs", async () => {
+    const terms = makeEthTerms();
+    const equalDeadlines = { ...terms, claimByMs: terms.refundAfterMs };
+
+    await expect(payerRail.lock(equalDeadlines)).rejects.toThrow(
+      InvalidTermsError,
+    );
+  });
+
+  it("rejects lock when claimByMs exceeds refundAfterMs", async () => {
+    const terms = makeEthTerms();
+    const invertedDeadlines = { ...terms, claimByMs: terms.refundAfterMs + 1000 };
+
+    await expect(payerRail.lock(invertedDeadlines)).rejects.toThrow(
+      InvalidTermsError,
+    );
   });
 
   /* -------------------------------------------------------------------------- */

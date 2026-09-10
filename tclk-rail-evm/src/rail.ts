@@ -83,6 +83,9 @@ export class EvmHtlcRail implements SettlementRail {
     if (!isValidHex32(terms.statement)) {
       throw new InvalidTermsError(`invalid statement: ${terms.statement}`);
     }
+    if (terms.claimByMs >= terms.refundAfterMs) {
+      throw new InvalidTermsError("claimByMs must be strictly less than refundAfterMs");
+    }
 
     const now = this.clock();
     if (now >= terms.refundAfterMs) {
@@ -136,6 +139,7 @@ export class EvmHtlcRail implements SettlementRail {
   async verifyLock(terms: LockTerms, ref: string): Promise<boolean> {
     try {
       if (terms.lock !== "hash") return false;
+      if (terms.claimByMs >= terms.refundAfterMs) return false;
       if (!isValidHex32(ref) || !isValidHex32(terms.contract)) return false;
       if (ref.toLowerCase() !== terms.contract.toLowerCase()) return false;
 
