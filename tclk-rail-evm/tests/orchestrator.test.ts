@@ -25,17 +25,7 @@ import {
   encodeTclkFrame,
 } from "../src/index.js";
 
-// Set ANVIL_PATH for Windows if present in user profile
-if (!process.env.ANVIL_PATH) {
-  const foundryAnvil = path.join(process.env.USERPROFILE || "", ".foundry", "bin", "anvil.exe");
-  if (fs.existsSync(foundryAnvil)) {
-    process.env.ANVIL_PATH = foundryAnvil;
-  }
-}
-
-// Dynamically import fixtures after setting environment variable
-const { startAnvil } = await import("./fixtures.js");
-type AnvilContext = Awaited<ReturnType<typeof startAnvil>>;
+import { startAnvil, type AnvilContext } from "./fixtures.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

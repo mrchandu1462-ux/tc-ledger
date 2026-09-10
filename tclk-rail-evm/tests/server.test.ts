@@ -25,16 +25,7 @@ import {
   type DealActionResponseDto,
 } from "../src/index.js";
 
-// Windows Anvil path fallback
-if (!process.env.ANVIL_PATH) {
-  const foundryAnvil = path.join(process.env.USERPROFILE || "", ".foundry", "bin", "anvil.exe");
-  if (fs.existsSync(foundryAnvil)) {
-    process.env.ANVIL_PATH = foundryAnvil;
-  }
-}
-
-const { startAnvil } = await import("./fixtures.js");
-type AnvilContext = Awaited<ReturnType<typeof startAnvil>>;
+import { startAnvil, type AnvilContext } from "./fixtures.js";
 
 describe("Phase 4C-1: Deal Wallet Local HTTP Server & Dashboard API", () => {
   let anvil: AnvilContext;

@@ -2,7 +2,8 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import * as path from "node:path";
 import {
   createPublicClient,
   createWalletClient,
@@ -23,7 +24,23 @@ const erc20Artifact = JSON.parse(
   readFileSync(new URL("../out/MockERC20.sol/MockERC20.json", import.meta.url), "utf8"),
 );
 
-export const ANVIL_PATH = process.env.ANVIL_PATH ?? "anvil";
+export function resolveAnvilPath(): string {
+  if (process.env.ANVIL_PATH && process.env.ANVIL_PATH.trim().length > 0) {
+    return process.env.ANVIL_PATH;
+  }
+  const userProfile = process.env.USERPROFILE || process.env.HOME || "";
+  if (userProfile) {
+    const defaultAnvil = process.platform === "win32"
+      ? path.join(userProfile, ".foundry", "bin", "anvil.exe")
+      : path.join(userProfile, ".foundry", "bin", "anvil");
+    if (existsSync(defaultAnvil)) {
+      return defaultAnvil;
+    }
+  }
+  return "anvil";
+}
+
+export const ANVIL_PATH = resolveAnvilPath();
 
 // Default pre-funded Anvil accounts
 export const PAYER_PRIVATE_KEY =
@@ -65,7 +82,8 @@ async function getFreePort(): Promise<number> {
 
 export async function startAnvil(): Promise<AnvilContext> {
   const port = await getFreePort();
-  const child = spawn(ANVIL_PATH, ["--port", String(port), "--silent"], {
+  const anvilBin = resolveAnvilPath();
+  const child = spawn(anvilBin, ["--port", String(port), "--silent"], {
     stdio: "ignore",
     windowsHide: true,
   });

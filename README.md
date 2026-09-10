@@ -120,7 +120,7 @@ Extracts an Export Inclusion Proof v1 artifact for an export line at a designate
 tc-ledger prove <path-to-export.jsonl> --room <room-id> --leaf-index <index> [--generation <gen>] [--output <proof.json>]
 ```
 
-### `tc-ledger verify-commitment`
+### `tc-ledger verify-commitment` (alias: `tc-ledger verify-artifact`)
 Re-derives and independently verifies an Export Commitment v1 artifact against raw export bytes, asserting line count, byte count, file SHA-256, Merkle root, verification counts, and anomaly indices.
 ```bash
 tc-ledger verify-commitment <path-to-export.jsonl> <path-to-artifact.json> [--expected-room <room>] [--expected-generation <gen>]
@@ -181,9 +181,9 @@ Detailed specification documents are maintained in [`docs/`](docs):
 * [docs/merkle-format-v1.md](docs/merkle-format-v1.md): RFC 6962-style Merkle aggregation, leaf hashing (`0x00`), internal node hashing (`0x01`), and odd-node promotion.
 * [docs/inclusion-proof-format-v1.md](docs/inclusion-proof-format-v1.md): Export Inclusion Proof v1 schema, audit path representation, trust anchors, and verification algorithm.
 
-## EVM Settlement Rail (`tclk-rail-evm`)
+## EVM Settlement Rail & Deal Wallet (`tclk-rail-evm`)
 
-Located in [`tclk-rail-evm/`](tclk-rail-evm), this sub-project provides an EVM-based Hash Time Locked Contract (HTLC) settlement rail for atomic value transfers linked to commitments.
+Located in [`tclk-rail-evm/`](tclk-rail-evm), this sub-project provides an EVM-based Hash Time Locked Contract (HTLC) settlement rail, Technocore signed room message transport, offline verifiable archival, and an interactive Deal Wallet for atomic value transfers linked to commitments.
 
 * **Smart Contract (`contracts/Htlc.sol`)**:
   * Native ETH and ERC-20 token escrows.
@@ -194,10 +194,18 @@ Located in [`tclk-rail-evm/`](tclk-rail-evm), this sub-project provides an EVM-b
 * **TypeScript Client Library (`src/rail.ts`)**:
   * Viem-based client (`EvmHtlcRail`) with DID-to-EVM address resolvers (`StaticAddressResolver`, `Secp256k1KeyAddressResolver`, `CompositeAddressResolver`).
   * Idempotent handling for repeated claims and refunds, with automatic in-flight race recovery against on-chain confirmations.
+* **Deal Protocol & Transport (`src/deal.ts`, `src/transport.ts`)**:
+  * Technocore Ed25519-signed frame protocol: `offer`, `accept`, `lock`, `reveal`, `claim`, `receipt`, `refund`, `cancel`.
+  * Cryptographic state machine with zero secret exposure policy (preimages are never serialized or leaked).
+* **Deal Archiver & Evidence Binding (`src/archiver.ts`)**:
+  * Binds completed deal transcripts directly to RFC 6962-style Merkle export commitments produced by `tc-ledger`.
+  * Packages standalone `DealArchive` artifacts verifiable offline with zero network queries.
+* **Deal Wallet Server & UI (`src/app/`)**:
+  * Coordinates two-party deals (`DealWalletApp`), persists verified archives with tamper detection (`ArchiveStore`), and serves a local dashboard on loopback `127.0.0.1` (`DealWalletServer`).
 
-## Security Audit Status
+## Security Review & Invariants
 
-Detailed findings for the EVM settlement rail are documented in [`tclk-rail-evm/SECURITY-FINDINGS.md`](tclk-rail-evm/SECURITY-FINDINGS.md):
+Detailed findings for the EVM settlement rail are documented in [`tclk-rail-evm/SECURITY-FINDINGS.md`](tclk-rail-evm/SECURITY-FINDINGS.md). The smart contracts (`Htlc.sol` and `MockERC20.sol`) are security-reviewed and covered by Foundry tests:
 
 * **SEC-HTLC-01 (Claim Idempotency & In-Flight Race)**: **Resolved**. Calling `claim()` on an already-claimed escrow resolves idempotently if the secret matches the hashlock. In-flight transaction failures are intercepted and rechecked against on-chain contract state.
 * **SEC-HTLC-02 (Refund Idempotency & In-Flight Race)**: **Resolved**. Calling `refund()` on an already-refunded escrow converges idempotently. Reverted transactions are re-read against on-chain state to gracefully handle races with concurrent sweeps.
@@ -215,7 +223,7 @@ Detailed findings for the EVM settlement rail are documented in [`tclk-rail-evm/
 All test suites and vectors pass against the current codebase:
 
 ```bash
-# 1. Python unit, integration, and vector tests (91 passed)
+# 1. Python unit, integration, and vector tests (97 passed)
 uv run pytest
 
 # 2. Frozen vector CLI validation (C3 vectors: OK)
@@ -223,14 +231,16 @@ uv run tc-ledger vectors
 
 # 3. EVM Smart Contract Foundry test suite (33 passed)
 cd tclk-rail-evm
-$env:Path += ";$env:USERPROFILE\.foundry\bin"
 forge test
 
-# 4. TypeScript rail integration test suite (41 passed)
+# 4. TypeScript rail & Deal Wallet integration test suite (140 passed across 8 suites)
 npm test
 
 # 5. TypeScript build check
 npm run build:ts
+
+# 6. Deal Archival & Evidence Binding Demonstration
+npm run demo:archive
 ```
 
 ## Installation & Development Setup
