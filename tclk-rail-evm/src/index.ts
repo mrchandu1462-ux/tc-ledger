@@ -146,5 +146,9 @@ export {
   type SafeDealsResponseDto,
   type SafeArchivesResponseDto,
   type HealthResponseDto,
+  type SafeMessageDto,
+  type SafeMessagesResponseDto,
+  type CreateOfferRequestDto,
+  type DealActionResponseDto,
   type CliOptions,
 } from "./app/server.js";

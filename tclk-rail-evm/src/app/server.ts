@@ -3,11 +3,21 @@
 import * as http from "node:http";
 import { URL } from "node:url";
 import * as path from "node:path";
-import { createPublicClient, http as viemHttp, type Address, getAddress } from "viem";
+import { createPublicClient, http as viemHttp, type Address, getAddress, parseEther } from "viem";
 import { foundry } from "viem/chains";
 import { DealManager, DealStatus } from "../deal.js";
+import {
+  type TechnocoreRecord,
+  tryDecodeTclkFrame,
+  isTclkLine,
+} from "../transport.js";
 import { WalletSession } from "./session.js";
-import { DealWalletApp } from "./orchestrator.js";
+import {
+  DealWalletApp,
+  OrchestratorError,
+  UnauthorizedActorError,
+  DealStateMismatchError,
+} from "./orchestrator.js";
 import type { SessionRole, ArchivedDealSummary } from "./types.js";
 
 // -----------------------------------------------------------------------------
@@ -71,6 +81,37 @@ export interface HealthResponseDto {
   timestamp: number;
 }
 
+export interface SafeMessageDto {
+  seq: number;
+  ts: string;
+  from: string;
+  isSelf: boolean;
+  text: string;
+  isProtocol: boolean;
+  frameType: string | null;
+  contractOrOfferId: string | null;
+}
+
+export interface SafeMessagesResponseDto {
+  messages: SafeMessageDto[];
+  count: number;
+}
+
+export interface CreateOfferRequestDto {
+  amountEth: string;
+  claimBySec?: number;
+  refundAfterSec?: number;
+  expiresSec?: number;
+  counterpartyDid?: string;
+  role?: "payer" | "payee";
+}
+
+export interface DealActionResponseDto {
+  ok: boolean;
+  action: string;
+  deal?: SafeDealDto;
+}
+
 /**
  * Projects a DealManager instance into an explicitly safe, public DTO.
  * Guarantees zero exposure of private keys, preimages, seeds, or RPC secrets.
@@ -112,6 +153,75 @@ export interface DealWalletServerConfig {
   app: DealWalletApp;
   host?: string;
   port?: number;
+  syncIntervalMs?: number;
+}
+
+// -----------------------------------------------------------------------------
+// Security & Body Helpers
+// -----------------------------------------------------------------------------
+
+const MAX_BODY_BYTES = 65536; // 64 KB limit
+
+export class HttpPayloadError extends Error {
+  public statusCode: number;
+  constructor(message: string, statusCode = 400) {
+    super(message);
+    this.name = "HttpPayloadError";
+    this.statusCode = statusCode;
+  }
+}
+
+export async function readJsonBody<T = unknown>(req: http.IncomingMessage): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let bytesReceived = 0;
+    const chunks: Buffer[] = [];
+
+    const contentLength = req.headers["content-length"];
+    if (contentLength && parseInt(contentLength, 10) > MAX_BODY_BYTES) {
+      reject(new HttpPayloadError(`Payload exceeds max body limit of ${MAX_BODY_BYTES} bytes`, 413));
+      return;
+    }
+
+    req.on("data", (chunk: Buffer) => {
+      bytesReceived += chunk.length;
+      if (bytesReceived > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new HttpPayloadError(`Payload exceeds max body limit of ${MAX_BODY_BYTES} bytes`, 413));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      if (chunks.length === 0) {
+        resolve({} as T);
+        return;
+      }
+      const raw = Buffer.concat(chunks).toString("utf-8").trim();
+      if (!raw) {
+        resolve({} as T);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        resolve(parsed as T);
+      } catch {
+        reject(new HttpPayloadError("Malformed JSON payload in request body", 400));
+      }
+    });
+
+    req.on("error", (err) => {
+      reject(new HttpPayloadError(`Error reading request body: ${err.message}`, 400));
+    });
+  });
+}
+
+export function sanitizeErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw
+    .replace(/https?:\/\/[^\s@]+@/gi, "http://[REDACTED]@")
+    .replace(/0x[0-9a-fA-F]{64}/g, "0x[REDACTED]")
+    .slice(0, 300);
 }
 
 // -----------------------------------------------------------------------------
@@ -124,7 +234,6 @@ export function renderDashboardHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="X-UA-Compatible" content="ie=edge">
   <title>Technocore Deal Wallet</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -150,38 +259,32 @@ export function renderDashboardHtml(): string {
       --font-mono: 'JetBrains Mono', monospace;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       background-color: var(--bg-base);
-      background-image: 
-        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 242, 254, 0.12), transparent),
-        radial-gradient(ellipse 60% 40% at 90% 80%, rgba(79, 172, 254, 0.06), transparent);
       color: var(--text-primary);
       font-family: var(--font-sans);
       min-height: 100vh;
+      display: flex;
+      flex-direction: column;
       line-height: 1.5;
-      padding: 24px;
-    }
-
-    .container {
-      max-width: 1280px;
-      margin: 0 auto;
+      background-image:
+        radial-gradient(circle at 10% 20%, rgba(0, 242, 254, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(139, 92, 246, 0.04) 0%, transparent 40%);
     }
 
     header {
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.8);
+      backdrop-filter: blur(12px);
+      padding: 16px 24px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 24px;
-      margin-bottom: 24px;
-      border-bottom: 1px solid var(--border-subtle);
-      flex-wrap: wrap;
-      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
 
     .brand {
@@ -190,726 +293,823 @@ export function renderDashboardHtml(): string {
       gap: 12px;
     }
 
-    .brand-icon {
-      width: 40px;
-      height: 40px;
-      border-radius: 10px;
+    .logo-badge {
       background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 0 20px rgba(0, 242, 254, 0.35);
       font-weight: 800;
-      color: #040810;
-      font-size: 20px;
+      color: #080c14;
+      font-size: 18px;
+      box-shadow: 0 0 16px rgba(0, 242, 254, 0.35);
     }
 
-    .brand-title {
-      font-size: 20px;
-      font-weight: 800;
+    .brand h1 {
+      font-size: 17px;
+      font-weight: 700;
       letter-spacing: -0.02em;
     }
 
-    .brand-subtitle {
-      font-size: 12px;
-      color: var(--text-secondary);
-      font-family: var(--font-mono);
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
+    .brand span {
+      color: var(--accent-cyan);
     }
 
-    .status-bar {
+    .header-status {
       display: flex;
       align-items: center;
       gap: 16px;
     }
 
-    .badge-pill {
+    .status-badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 6px 14px;
+      padding: 5px 12px;
       border-radius: 9999px;
       font-size: 12px;
-      font-family: var(--font-mono);
       font-weight: 600;
-      background: rgba(15, 23, 42, 0.8);
-      border: 1px solid var(--border-subtle);
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--accent-emerald);
+      border: 1px solid rgba(16, 185, 129, 0.2);
     }
 
     .pulse-dot {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
-      background-color: var(--accent-emerald);
+      background: var(--accent-emerald);
       box-shadow: 0 0 8px var(--accent-emerald);
-      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      animation: pulse 2s infinite;
     }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(0.85); }
+      50% { opacity: 0.4; transform: scale(0.85); }
     }
 
-    .pulse-dot.error {
-      background-color: var(--accent-rose);
-      box-shadow: 0 0 8px var(--accent-rose);
+    .container {
+      max-width: 1600px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
     }
 
-    /* Grid Layout */
+    /* Split Dashboard: 50% Left (Room/Chat) and 50% Right (Deals/Lifecycle) */
     .dashboard-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-      gap: 20px;
-      margin-bottom: 32px;
+      grid-template-columns: 480px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    @media (max-width: 1100px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
     }
 
     .card {
       background: var(--bg-card);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
       border: 1px solid var(--border-subtle);
-      border-radius: 16px;
-      padding: 24px;
-      transition: all 0.2s ease;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .card:hover {
-      border-color: var(--border-focus);
-      background: var(--bg-card-hover);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
-    }
-
-    .card-label {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--text-muted);
-      font-weight: 700;
-      margin-bottom: 12px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .card-value-large {
-      font-size: 32px;
-      font-weight: 800;
-      letter-spacing: -0.02em;
-      color: var(--text-primary);
-      margin-bottom: 8px;
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-    }
-
-    .card-value-large .unit {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--accent-cyan);
-    }
-
-    .info-list {
+      border-radius: 14px;
+      padding: 20px;
+      backdrop-filter: blur(16px);
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      margin-top: 16px;
+      gap: 16px;
     }
 
-    .info-row {
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 13px;
-      gap: 12px;
-    }
-
-    .info-label {
-      color: var(--text-secondary);
-    }
-
-    .info-val {
-      font-family: var(--font-mono);
-      color: var(--text-primary);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      text-align: right;
-      word-break: break-all;
-    }
-
-    .copy-btn {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      cursor: pointer;
-      padding: 2px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-family: var(--font-sans);
-      transition: all 0.15s ease;
-    }
-
-    .copy-btn:hover {
-      background: rgba(0, 242, 254, 0.15);
-      color: var(--accent-cyan);
-      border-color: rgba(0, 242, 254, 0.3);
     }
 
     .tag {
-      padding: 2px 8px;
-      border-radius: 6px;
       font-size: 11px;
-      font-family: var(--font-mono);
+      padding: 2px 8px;
+      border-radius: 4px;
       font-weight: 600;
+      font-family: var(--font-mono);
       text-transform: uppercase;
     }
+    .tag-cyan { background: rgba(0, 242, 254, 0.1); color: var(--accent-cyan); border: 1px solid rgba(0, 242, 254, 0.25); }
+    .tag-blue { background: rgba(79, 172, 254, 0.1); color: var(--accent-blue); border: 1px solid rgba(79, 172, 254, 0.25); }
+    .tag-emerald { background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.25); }
+    .tag-amber { background: rgba(245, 158, 11, 0.1); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.25); }
+    .tag-purple { background: rgba(139, 92, 246, 0.1); color: var(--accent-purple); border: 1px solid rgba(139, 92, 246, 0.25); }
+    .tag-rose { background: rgba(244, 63, 94, 0.1); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.25); }
 
-    .tag-cyan { background: rgba(0, 242, 254, 0.12); color: var(--accent-cyan); border: 1px solid rgba(0, 242, 254, 0.25); }
-    .tag-emerald { background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.25); }
-    .tag-amber { background: rgba(245, 158, 11, 0.12); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.25); }
-    .tag-purple { background: rgba(139, 92, 246, 0.12); color: var(--accent-purple); border: 1px solid rgba(139, 92, 246, 0.25); }
-    .tag-rose { background: rgba(244, 63, 94, 0.12); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.25); }
-    .tag-slate { background: rgba(148, 163, 184, 0.12); color: var(--text-secondary); border: 1px solid rgba(148, 163, 184, 0.25); }
-
-    /* Section Tabs & Content */
-    .section-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-      gap: 12px;
+    /* Identity & Stats Row */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
     }
 
-    .section-title {
-      font-size: 18px;
-      font-weight: 700;
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 14px 18px;
       display: flex;
-      align-items: center;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Left: Room Chat & Stream */
+    .room-pane {
+      display: flex;
+      flex-direction: column;
+      height: 760px;
+    }
+
+    .messages-container {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
       gap: 10px;
-    }
-
-    .section-tabs {
-      display: flex;
-      gap: 8px;
-      background: rgba(15, 23, 42, 0.6);
-      padding: 4px;
+      padding: 12px;
+      background: rgba(8, 12, 20, 0.6);
       border-radius: 10px;
       border: 1px solid var(--border-subtle);
     }
 
-    .tab-btn {
-      background: transparent;
-      border: none;
-      color: var(--text-secondary);
-      padding: 6px 14px;
+    .msg-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      background: rgba(15, 23, 42, 0.6);
+      border-left: 3px solid var(--accent-cyan);
+    }
+    .msg-item.self {
+      border-left-color: var(--accent-purple);
+      background: rgba(139, 92, 246, 0.07);
+    }
+    .msg-item.protocol {
+      border-left-color: var(--accent-amber);
+      background: rgba(245, 158, 11, 0.07);
+    }
+
+    .msg-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .msg-author {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: var(--accent-cyan);
+    }
+    .msg-item.self .msg-author { color: var(--accent-purple); }
+    .msg-item.protocol .msg-author { color: var(--accent-amber); }
+
+    .msg-text {
+      color: var(--text-primary);
+      word-break: break-word;
+      white-space: pre-wrap;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .chat-composer {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .chat-input {
+      flex: 1;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+    }
+    .chat-input:focus {
+      outline: none;
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 2px rgba(0, 242, 254, 0.2);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 16px;
       border-radius: 8px;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
-      font-family: var(--font-sans);
+      border: 1px solid transparent;
       transition: all 0.15s ease;
+      font-family: var(--font-sans);
     }
-
-    .tab-btn.active {
-      background: rgba(255, 255, 255, 0.08);
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      color: #080c14;
+      font-weight: 700;
+    }
+    .btn-primary:hover {
+      box-shadow: 0 0 14px rgba(0, 242, 254, 0.4);
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
       color: var(--text-primary);
-      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      border: 1px solid var(--border-subtle);
     }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .btn-action {
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 6px;
+    }
+    .btn-emerald { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .btn-emerald:hover { background: rgba(16, 185, 129, 0.25); }
+    .btn-amber { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); }
+    .btn-amber:hover { background: rgba(245, 158, 11, 0.25); }
+    .btn-purple { background: rgba(139, 92, 246, 0.15); color: var(--accent-purple); border: 1px solid rgba(139, 92, 246, 0.3); }
+    .btn-purple:hover { background: rgba(139, 92, 246, 0.25); }
+    .btn-rose { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+    .btn-rose:hover { background: rgba(244, 63, 94, 0.25); }
 
-    .deal-list {
+    /* Right: Deals List & Lifecycle */
+    .deal-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 16px;
       display: flex;
       flex-direction: column;
       gap: 12px;
+      transition: all 0.15s ease;
     }
-
-    .deal-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-subtle);
-      border-radius: 12px;
-      padding: 16px 20px;
-      display: grid;
-      grid-template-columns: auto 1fr auto auto;
-      align-items: center;
-      gap: 20px;
-      transition: border-color 0.15s ease;
-    }
-
     .deal-card:hover {
-      border-color: var(--border-focus);
+      border-color: rgba(255, 255, 255, 0.15);
     }
 
-    .deal-id-group {
+    .deal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .deal-title {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    /* Lifecycle Step Progress */
+    .timeline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      background: rgba(8, 12, 20, 0.7);
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      margin: 4px 0;
+      overflow-x: auto;
+    }
+
+    .step-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .step-node.completed {
+      color: var(--accent-cyan);
+    }
+    .step-node.active {
+      color: #080c14;
+      background: var(--accent-cyan);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 700;
+      box-shadow: 0 0 10px rgba(0, 242, 254, 0.5);
+    }
+    .step-node.terminal {
+      background: var(--accent-emerald);
+      color: #080c14;
+    }
+    .step-divider {
+      color: var(--border-subtle);
+      font-size: 12px;
+    }
+
+    .deal-details-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      font-size: 12px;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 10px;
+      border-radius: 6px;
+    }
+    .detail-item {
+      display: flex;
+      flex-direction: column;
+    }
+    .detail-k { color: var(--text-muted); font-size: 10px; text-transform: uppercase; }
+    .detail-v { font-family: var(--font-mono); color: var(--text-secondary); word-break: break-all; }
+
+    .deal-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    /* Modal / Form */
+    .offer-form {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      background: rgba(8, 12, 20, 0.8);
+      padding: 16px;
+      border-radius: 10px;
+      border: 1px solid var(--border-focus);
+      margin-bottom: 16px;
+    }
+    .form-group {
       display: flex;
       flex-direction: column;
       gap: 4px;
     }
-
-    .deal-contract-id {
-      font-family: var(--font-mono);
-      font-weight: 600;
-      font-size: 13px;
-      color: var(--text-primary);
-    }
-
-    .deal-sub {
-      font-size: 12px;
-      color: var(--text-muted);
-      font-family: var(--font-mono);
-    }
-
-    .deal-amount-group {
-      text-align: right;
-    }
-
-    .deal-amount {
-      font-weight: 700;
-      font-size: 16px;
-      color: var(--text-primary);
-    }
-
-    .empty-state {
-      padding: 48px 24px;
-      text-align: center;
-      background: var(--bg-card);
-      border: 1px dashed var(--border-subtle);
-      border-radius: 16px;
-      color: var(--text-muted);
-      font-size: 14px;
-    }
-
-    .archive-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
-
-    .archive-table th {
-      text-align: left;
-      padding: 12px 16px;
-      color: var(--text-muted);
-      font-weight: 600;
+    .form-group label {
       font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .archive-table td {
-      padding: 14px 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    }
-
-    .archive-table tr:hover td {
-      background: rgba(255, 255, 255, 0.02);
-    }
-
-    footer {
-      margin-top: 48px;
-      padding-top: 24px;
-      border-top: 1px solid var(--border-subtle);
-      display: flex;
-      justify-content: space-between;
       color: var(--text-muted);
-      font-size: 12px;
+      font-weight: 600;
+    }
+    .form-group input {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--text-primary);
       font-family: var(--font-mono);
-      flex-wrap: wrap;
-      gap: 12px;
+      font-size: 12px;
+    }
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--accent-cyan);
     }
 
-    @media (max-width: 768px) {
-      body { padding: 16px; }
-      .deal-card { grid-template-columns: 1fr; gap: 12px; }
-      .deal-amount-group { text-align: left; }
+    .empty-placeholder {
+      text-align: center;
+      padding: 32px;
+      color: var(--text-muted);
+      font-size: 13px;
     }
+
+    #action-feedback {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      z-index: 1000;
+      display: none;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    }
+    #action-feedback.success { background: rgba(16, 185, 129, 0.9); color: #fff; display: block; }
+    #action-feedback.error { background: rgba(244, 63, 94, 0.9); color: #fff; display: block; }
   </style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <div class="brand">
-        <div class="brand-icon">⚡</div>
-        <div>
-          <div class="brand-title">Technocore Deal Wallet</div>
-          <div class="brand-subtitle">tclk/1 EVM Settlement Rail</div>
-        </div>
-      </div>
-      <div class="status-bar">
-        <div class="badge-pill">
-          <span id="pulse-dot" class="pulse-dot"></span>
-          <span id="connection-status">Connecting...</span>
-        </div>
-        <div class="badge-pill">
-          <span style="color: var(--text-muted);">HOST</span>
-          <span id="server-host">127.0.0.1</span>
-        </div>
-      </div>
-    </header>
-
-    <main>
-      <!-- Top Cards -->
-      <div class="dashboard-grid">
-        <!-- Wallet Card -->
-        <div class="card">
-          <div class="card-label">
-            <span>Identity & Balance</span>
-            <span id="session-role" class="tag tag-cyan">DUAL</span>
-          </div>
-          <div class="card-value-large">
-            <span id="eth-balance">0.0000</span>
-            <span class="unit">ETH</span>
-          </div>
-          <div class="info-list">
-            <div class="info-row">
-              <span class="info-label">EVM Address</span>
-              <span class="info-val">
-                <span id="evm-address">0x000...000</span>
-                <button class="copy-btn" onclick="copyText('evm-address-full')">Copy</button>
-              </span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Technocore DID</span>
-              <span class="info-val">
-                <span id="wallet-did">did:key:...</span>
-                <button class="copy-btn" onclick="copyText('wallet-did-full')">Copy</button>
-              </span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Chain ID</span>
-              <span class="info-val">
-                <span id="chain-id" class="tag tag-slate">31337</span>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Room & HTLC Card -->
-        <div class="card">
-          <div class="card-label">
-            <span>Settlement Environment</span>
-            <span class="tag tag-emerald">ONLINE</span>
-          </div>
-          <div class="card-value-large">
-            <span id="room-name" style="font-size: 24px; font-family: var(--font-mono); color: var(--accent-blue);">--</span>
-          </div>
-          <div class="info-list">
-            <div class="info-row">
-              <span class="info-label">HTLC Contract</span>
-              <span class="info-val">
-                <span id="htlc-address">0x000...000</span>
-                <button class="copy-btn" onclick="copyText('htlc-address-full')">Copy</button>
-              </span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Sync Protocol</span>
-              <span class="info-val" style="color: var(--accent-cyan);">tclk/1 Live Stream</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Last Poll</span>
-              <span id="last-poll" class="info-val">Just now</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Metrics Card -->
-        <div class="card">
-          <div class="card-label">
-            <span>Lifecycle Metrics</span>
-            <span class="tag tag-purple">STATS</span>
-          </div>
-          <div class="card-value-large">
-            <span id="active-deals-count">0</span>
-            <span class="unit" style="color: var(--text-secondary); font-size: 14px;">Active / <span id="completed-deals-count">0</span> Closed</span>
-          </div>
-          <div class="info-list">
-            <div class="info-row">
-              <span class="info-label">Verified Archives</span>
-              <span class="info-val">
-                <span id="archives-count" class="tag tag-emerald">0 Offline Verified</span>
-              </span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Loopback Security</span>
-              <span class="info-val" style="color: var(--accent-emerald);">Strict Localhost Only</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Server Uptime</span>
-              <span id="server-uptime" class="info-val">0s</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Deals Section -->
-      <div style="margin-bottom: 40px;">
-        <div class="section-header">
-          <div class="section-title">
-            <span>Deals Overview</span>
-          </div>
-          <div class="section-tabs">
-            <button id="tab-active" class="tab-btn active" onclick="switchDealsTab('active')">Active Deals (<span id="tab-active-count">0</span>)</button>
-            <button id="tab-completed" class="tab-btn" onclick="switchDealsTab('completed')">Completed (<span id="tab-completed-count">0</span>)</button>
-          </div>
-        </div>
-
-        <div id="deals-active-container" class="deal-list">
-          <div class="empty-state">No active deals currently in room.</div>
-        </div>
-
-        <div id="deals-completed-container" class="deal-list" style="display: none;">
-          <div class="empty-state">No completed deals yet.</div>
-        </div>
-      </div>
-
-      <!-- Archives Section -->
+  <header>
+    <div class="brand">
+      <div class="logo-badge">⚡</div>
       <div>
-        <div class="section-header">
-          <div class="section-title">
-            <span>Verified Cryptographic Archives</span>
-          </div>
-          <div>
-            <span id="archives-summary-tag" class="tag tag-slate">0 Stored</span>
-          </div>
+        <h1>Technocore <span>Deal Wallet</span></h1>
+        <div class="subtitle" style="font-size: 11px; color: var(--text-muted);">tclk/1 EVM Settlement Rail</div>
+      </div>
+    </div>
+    <div class="header-status">
+      <div class="status-badge">
+        <div class="pulse-dot" id="pulse-dot"></div>
+        <span id="connection-status">Live Connected</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- Top Identity & Stats Row -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Session DID</div>
+        <div class="stat-value" id="session-did">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Wallet Address</div>
+        <div class="stat-value" id="session-address">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Balance</div>
+        <div class="stat-value" id="session-balance">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Configured Role</div>
+        <div class="stat-value" id="session-role">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Room / Chain</div>
+        <div class="stat-value" id="session-room">—</div>
+      </div>
+    </div>
+
+    <!-- Main Grid: Left Room / Right Deals -->
+    <div class="dashboard-grid">
+      <!-- Left: Technocore Room & Chat -->
+      <div class="card room-pane">
+        <div class="card-title">
+          <span>Technocore Room Stream</span>
+          <span class="tag tag-cyan" id="room-badge">room</span>
+        </div>
+        <div class="messages-container" id="messages-container">
+          <div class="empty-placeholder">Connecting to room transcript...</div>
+        </div>
+        <form class="chat-composer" id="chat-form">
+          <input type="text" id="chat-input" class="chat-input" placeholder="Type a message to the room..." autocomplete="off" maxlength="4096" />
+          <button type="submit" class="btn btn-primary" id="btn-send-chat">Send</button>
+        </form>
+      </div>
+
+      <!-- Right: Deals & Action Controls -->
+      <div class="card">
+        <div class="card-title">
+          <span>EVM HTLC Deals</span>
+          <button class="btn btn-secondary btn-action" id="toggle-offer-form">+ Create Offer</button>
         </div>
 
-        <div class="card" style="padding: 0; overflow-x: auto;">
-          <table class="archive-table">
-            <thead>
-              <tr>
-                <th>Contract ID</th>
-                <th>Room</th>
-                <th>Status</th>
-                <th>Integrity</th>
-                <th>Export Root</th>
-                <th>Archived At</th>
-              </tr>
-            </thead>
-            <tbody id="archives-table-body">
-              <tr>
-                <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">No archives stored yet.</td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- Inline Create Offer Form (hidden by default) -->
+        <form class="offer-form" id="offer-form" style="display: none;">
+          <div class="form-group">
+            <label>Amount (ETH)</label>
+            <input type="text" id="offer-amount-eth" placeholder="0.01" value="0.01" required />
+          </div>
+          <div class="form-group">
+            <label>Counterparty DID (Optional)</label>
+            <input type="text" id="offer-counterparty-did" placeholder="did:key:z..." />
+          </div>
+          <div class="form-group">
+            <label>Claim Deadline (Sec)</label>
+            <input type="number" id="offer-claim-sec" value="600" required min="60" />
+          </div>
+          <div class="form-group">
+            <label>Refund Deadline (Sec)</label>
+            <input type="number" id="offer-refund-sec" value="1200" required min="120" />
+          </div>
+          <div class="form-group" style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px;">
+            <button type="button" class="btn btn-secondary btn-action" id="cancel-offer-btn">Cancel</button>
+            <button type="submit" class="btn btn-primary btn-action" id="submit-offer-btn">Publish Offer</button>
+          </div>
+        </form>
+
+        <div id="deals-list" style="display: flex; flex-direction: column; gap: 14px;">
+          <div class="empty-placeholder">No deals found in this session.</div>
         </div>
       </div>
-    </main>
-
-    <footer>
-      <div>Technocore Deal Wallet &bull; Phase 4C-1 Local Node</div>
-      <div>Security: Loopback Binding &bull; Zero Browser Credential Exposure</div>
-    </footer>
+    </div>
   </div>
 
-  <!-- Hidden elements for full string copying -->
-  <input type="hidden" id="evm-address-full" value="">
-  <input type="hidden" id="wallet-did-full" value="">
-  <input type="hidden" id="htlc-address-full" value="">
+  <div id="action-feedback"></div>
 
   <script>
-    // Strict HTML escaping to prevent XSS injection from user-controlled content
+    let myDid = '';
+    let myRole = '';
+
     function escapeHtml(str) {
-      if (str === null || str === undefined) return '';
+      if (!str) return '';
       return String(str)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/'/g, '&#039;');
     }
 
-    function shortenHex(hex, head = 6, tail = 4) {
-      if (!hex || hex.length <= head + tail) return hex || '';
-      return hex.slice(0, head) + '...' + hex.slice(-tail);
+    function shortenHex(str, len = 6) {
+      if (!str || str.length <= len * 2 + 2) return str || '';
+      return str.slice(0, len + 2) + '...' + str.slice(-len);
     }
 
-    function shortenDid(did, head = 12, tail = 6) {
-      if (!did || did.length <= head + tail) return did || '';
-      return did.slice(0, head) + '...' + did.slice(-tail);
+    function showFeedback(msg, isError = false) {
+      const el = document.getElementById('action-feedback');
+      el.textContent = msg;
+      el.className = isError ? 'error' : 'success';
+      setTimeout(() => {
+        el.className = '';
+      }, 4000);
     }
 
-    function copyText(elementId) {
-      const el = document.getElementById(elementId);
-      if (!el || !el.value) return;
-      navigator.clipboard.writeText(el.value).then(() => {
-        const btn = event.target;
-        const originalText = btn.textContent;
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = originalText; }, 1200);
+    async function executeDealAction(id, action) {
+      try {
+        const res = await fetch('/api/deals/' + encodeURIComponent(id) + '/' + action, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.message || data.error || 'Action failed');
+        }
+        showFeedback('Action ' + action + ' succeeded!');
+        await poll();
+      } catch (err) {
+        showFeedback(err.message, true);
+      }
+    }
+
+    function renderTimeline(deal) {
+      const steps = ['OFFER', 'ACCEPTED', 'LOCKED', 'VERIFIED', 'REVEALED', 'CLAIMED'];
+      const st = deal.status;
+      const isRefunded = (st === 'REFUNDED');
+      const isCancelled = (st === 'CANCELLED');
+
+      let currentIdx = steps.indexOf(st);
+      if (currentIdx === -1 && (isRefunded || isCancelled)) {
+        currentIdx = steps.length;
+      }
+
+      let html = '<div class="timeline">';
+      steps.forEach((step, idx) => {
+        const isCurrent = (st === step);
+        const isPast = (idx < currentIdx);
+        let cls = 'step-node';
+        if (isCurrent) cls += ' active';
+        else if (isPast) cls += ' completed';
+        if (step === 'CLAIMED' && isCurrent) cls += ' terminal';
+
+        html += '<div class="' + cls + '">' + step + '</div>';
+        if (idx < steps.length - 1) {
+          html += '<span class="step-divider">→</span>';
+        }
       });
-    }
 
-    let activeTab = 'active';
-    function switchDealsTab(tab) {
-      activeTab = tab;
-      const activeBtn = document.getElementById('tab-active');
-      const completedBtn = document.getElementById('tab-completed');
-      const activeContainer = document.getElementById('deals-active-container');
-      const completedContainer = document.getElementById('deals-completed-container');
-
-      if (tab === 'active') {
-        activeBtn.classList.add('active');
-        completedBtn.classList.remove('active');
-        activeContainer.style.display = 'flex';
-        completedContainer.style.display = 'none';
-      } else {
-        completedBtn.classList.add('active');
-        activeBtn.classList.remove('active');
-        activeContainer.style.display = 'none';
-        completedContainer.style.display = 'flex';
+      if (isRefunded) {
+        html += '<span class="step-divider">→</span><div class="step-node active terminal">REFUNDED</div>';
+      } else if (isCancelled) {
+        html += '<span class="step-divider">→</span><div class="step-node active" style="background:var(--accent-rose); color:#fff;">CANCELLED</div>';
       }
-    }
 
-    function getStatusTagClass(status) {
-      switch (status) {
-        case 'OFFERED': return 'tag-amber';
-        case 'ACCEPTED': return 'tag-cyan';
-        case 'LOCKED': return 'tag-purple';
-        case 'VERIFIED': return 'tag-cyan';
-        case 'REVEALED': return 'tag-amber';
-        case 'CLAIMED': return 'tag-emerald';
-        case 'REFUNDED': return 'tag-rose';
-        case 'CANCELLED': return 'tag-slate';
-        default: return 'tag-slate';
-      }
+      html += '</div>';
+      return html;
     }
 
     function renderDealCard(deal) {
-      const displayId = deal.contractId ? shortenHex(deal.contractId) : shortenHex(deal.offerId);
-      const isContract = Boolean(deal.contractId);
-      const statusClass = getStatusTagClass(deal.status);
-      const safeAmount = escapeHtml(deal.amount);
-      const safeAsset = escapeHtml(deal.asset);
-      const safeRole = escapeHtml(deal.role.toUpperCase());
-      const safePayer = escapeHtml(shortenDid(deal.payer?.did || 'Unknown'));
-      const safePayee = escapeHtml(shortenDid(deal.payee?.did || 'Unknown'));
-      const safeStatement = deal.statement ? escapeHtml(shortenHex(deal.statement)) : 'Pending';
+      const id = deal.contractId || deal.offerId;
+      const isPayer = (deal.payer && deal.payer.did === myDid);
+      const isPayee = (deal.payee && deal.payee.did === myDid);
+      const st = deal.status;
+
+      let actions = [];
+      // Role-aware actions
+      if (st === 'OFFER') {
+        if (!isPayer) actions.push({ name: 'Accept', action: 'accept', cls: 'btn-emerald' });
+        if (isPayer) actions.push({ name: 'Cancel', action: 'cancel', cls: 'btn-rose' });
+      } else if (st === 'ACCEPTED') {
+        if (isPayer) actions.push({ name: 'Lock Funds', action: 'lock', cls: 'btn-cyan' });
+        actions.push({ name: 'Cancel', action: 'cancel', cls: 'btn-rose' });
+      } else if (st === 'LOCKED') {
+        actions.push({ name: 'Verify', action: 'verify', cls: 'btn-blue' });
+        if (isPayee) actions.push({ name: 'Reveal Secret', action: 'reveal', cls: 'btn-purple' });
+        if (isPayer) actions.push({ name: 'Refund', action: 'refund', cls: 'btn-amber' });
+      } else if (st === 'VERIFIED') {
+        if (isPayee) actions.push({ name: 'Reveal Secret', action: 'reveal', cls: 'btn-purple' });
+        if (isPayer) actions.push({ name: 'Refund', action: 'refund', cls: 'btn-amber' });
+      } else if (st === 'REVEALED') {
+        if (isPayee) actions.push({ name: 'Claim Funds', action: 'claim', cls: 'btn-emerald' });
+        if (isPayer) actions.push({ name: 'Refund', action: 'refund', cls: 'btn-amber' });
+      }
+
+      const actionsHtml = actions.map((a) => '<button class="btn btn-action ' + a.cls + '" onclick="executeDealAction(\\'' + escapeHtml(id) + '\\', \\'' + a.action + '\\')">' + a.name + '</button>').join('');
 
       return \`
         <div class="deal-card">
-          <div class="deal-id-group">
-            <div class="deal-contract-id">\${escapeHtml(displayId)}</div>
-            <div class="deal-sub">\${isContract ? 'Contract' : 'Offer'} &bull; Lock: \${escapeHtml(deal.lock)}</div>
+          <div class="deal-header">
+            <span class="deal-title">\${deal.contractId ? 'Contract: ' + escapeHtml(shortenHex(deal.contractId, 8)) : 'Offer: ' + escapeHtml(shortenHex(deal.offerId, 8))}</span>
+            <span class="tag tag-cyan">\${escapeHtml(deal.status)}</span>
           </div>
-          <div>
-            <span class="tag \${statusClass}">\${escapeHtml(deal.status)}</span>
-            <span class="tag tag-slate" style="margin-left: 6px;">\${safeRole}</span>
+          \${renderTimeline(deal)}
+          <div class="deal-details-grid">
+            <div class="detail-item">
+              <span class="detail-k">Amount (Wei)</span>
+              <span class="detail-v">\${escapeHtml(deal.amount)}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-k">Role (Session)</span>
+              <span class="detail-v">\${isPayer ? 'Payer' : (isPayee ? 'Payee' : 'Observer')}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-k">Payer DID</span>
+              <span class="detail-v">\${escapeHtml(shortenHex(deal.payer?.did || '—', 8))}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-k">Payee DID</span>
+              <span class="detail-v">\${escapeHtml(shortenHex(deal.payee?.did || '—', 8))}</span>
+            </div>
+            \${deal.statement ? \`
+            <div class="detail-item" style="grid-column: 1 / -1;">
+              <span class="detail-k">Hashlock Statement</span>
+              <span class="detail-v">\${escapeHtml(deal.statement)}</span>
+            </div>\` : ''}
           </div>
-          <div style="font-size: 12px; color: var(--text-secondary);">
-            <div>Payer: <span style="font-family: var(--font-mono); color: var(--text-primary);">\${safePayer}</span></div>
-            <div>Payee: <span style="font-family: var(--font-mono); color: var(--text-primary);">\${safePayee}</span></div>
-          </div>
-          <div class="deal-amount-group">
-            <div class="deal-amount">\${safeAmount} \${safeAsset}</div>
-            <div class="deal-sub">Hashlock: \${safeStatement}</div>
-          </div>
+          \${actions.length > 0 ? '<div class="deal-actions">' + actionsHtml + '</div>' : ''}
         </div>
       \`;
     }
 
-    async function pollDashboard() {
+    async function poll() {
       try {
-        const [healthRes, sessionRes, balanceRes, dealsRes, archivesRes] = await Promise.all([
-          fetch('/api/health'),
+        const [sessRes, balRes, msgsRes, dealsRes, archivesRes] = await Promise.all([
           fetch('/api/session'),
           fetch('/api/balance'),
+          fetch('/api/messages'),
           fetch('/api/deals'),
-          fetch('/api/archives'),
+          fetch('/api/archives')
         ]);
 
-        if (healthRes.ok && sessionRes.ok) {
-          document.getElementById('pulse-dot').className = 'pulse-dot';
-          document.getElementById('connection-status').textContent = 'Connected (Loopback)';
-          
-          const health = await healthRes.json();
-          const uptimeSec = Math.floor(health.uptime || 0);
-          document.getElementById('server-uptime').textContent = uptimeSec + 's';
-        } else {
-          throw new Error('Server health error');
+        if (sessRes.ok) {
+          const sess = await sessRes.json();
+          myDid = sess.did;
+          myRole = sess.role;
+          document.getElementById('session-did').textContent = shortenHex(sess.did, 8);
+          document.getElementById('session-address').textContent = shortenHex(sess.evmAddress, 6);
+          document.getElementById('session-role').textContent = sess.role.toUpperCase();
+          document.getElementById('session-room').textContent = sess.room + ' (EVM ' + sess.chainId + ')';
+          document.getElementById('room-badge').textContent = sess.room;
         }
 
-        if (sessionRes.ok) {
-          const session = await sessionRes.json();
-          document.getElementById('wallet-did').textContent = shortenDid(session.did);
-          document.getElementById('wallet-did-full').value = session.did || '';
-          document.getElementById('evm-address').textContent = shortenHex(session.evmAddress);
-          document.getElementById('evm-address-full').value = session.evmAddress || '';
-          document.getElementById('chain-id').textContent = session.chainId || '31337';
-          document.getElementById('session-role').textContent = (session.role || 'DUAL').toUpperCase();
-          document.getElementById('room-name').textContent = session.room || 'None';
-          document.getElementById('htlc-address').textContent = shortenHex(session.htlcAddress);
-          document.getElementById('htlc-address-full').value = session.htlcAddress || '';
+        if (balRes.ok) {
+          const bal = await balRes.json();
+          document.getElementById('session-balance').textContent = bal.formatted + ' ETH';
         }
 
-        if (balanceRes.ok) {
-          const balance = await balanceRes.json();
-          const formatted = parseFloat(balance.formatted || 0).toFixed(4);
-          document.getElementById('eth-balance').textContent = formatted;
+        if (msgsRes.ok) {
+          const data = await msgsRes.json();
+          const msgs = data.messages || [];
+          const container = document.getElementById('messages-container');
+          if (msgs.length === 0) {
+            container.innerHTML = '<div class="empty-placeholder">No messages in room yet.</div>';
+          } else {
+            container.innerHTML = msgs.map(m => {
+              let cls = 'msg-item';
+              if (m.isSelf) cls += ' self';
+              if (m.isProtocol) cls += ' protocol';
+              const label = m.isProtocol ? ('[PROTOCOL: ' + (m.frameType || 'FRAME') + ']') : (m.isSelf ? 'You' : shortenHex(m.from, 6));
+              const dt = new Date(m.ts).toLocaleTimeString();
+              return \`
+                <div class="\${cls}">
+                  <div class="msg-header">
+                    <span class="msg-author">\${escapeHtml(label)}</span>
+                    <span>\${escapeHtml(dt)}</span>
+                  </div>
+                  <div class="msg-text">\${escapeHtml(m.text)}</div>
+                </div>
+              \`;
+            }).join('');
+            container.scrollTop = container.scrollHeight;
+          }
         }
 
         if (dealsRes.ok) {
-          const deals = await dealsRes.json();
-          const active = deals.active || [];
-          const completed = deals.completed || [];
-
-          document.getElementById('active-deals-count').textContent = active.length;
-          document.getElementById('completed-deals-count').textContent = completed.length;
-          document.getElementById('tab-active-count').textContent = active.length;
-          document.getElementById('tab-completed-count').textContent = completed.length;
-
-          const activeContainer = document.getElementById('deals-active-container');
-          if (active.length === 0) {
-            activeContainer.innerHTML = '<div class="empty-state">No active deals currently in room.</div>';
+          const dealsData = await dealsRes.json();
+          const allDeals = [...(dealsData.active || []), ...(dealsData.completed || [])];
+          const container = document.getElementById('deals-list');
+          if (allDeals.length === 0) {
+            container.innerHTML = '<div class="empty-placeholder">No active or completed deals yet.</div>';
           } else {
-            activeContainer.innerHTML = active.map(renderDealCard).join('');
-          }
-
-          const completedContainer = document.getElementById('deals-completed-container');
-          if (completed.length === 0) {
-            completedContainer.innerHTML = '<div class="empty-state">No completed deals yet.</div>';
-          } else {
-            completedContainer.innerHTML = completed.map(renderDealCard).join('');
+            container.innerHTML = allDeals.map(renderDealCard).join('');
           }
         }
-
-        if (archivesRes.ok) {
-          const archivesData = await archivesRes.json();
-          const list = archivesData.archives || [];
-          document.getElementById('archives-count').textContent = list.length + ' Offline Verified';
-          document.getElementById('archives-summary-tag').textContent = list.length + ' Stored';
-
-          const tbody = document.getElementById('archives-table-body');
-          if (list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">No archives stored yet.</td></tr>';
-          } else {
-            tbody.innerHTML = list.map(item => {
-              const dt = new Date(item.archivedAtMs).toLocaleTimeString();
-              return \`
-                <tr>
-                  <td style="font-family: var(--font-mono); font-weight: 600;">\${escapeHtml(shortenHex(item.contractId))}</td>
-                  <td style="font-family: var(--font-mono);">\${escapeHtml(item.room)}</td>
-                  <td><span class="tag \${getStatusTagClass(item.status)}">\${escapeHtml(item.status)}</span></td>
-                  <td><span class="tag tag-emerald">✓ Offline Verified</span></td>
-                  <td style="font-family: var(--font-mono); color: var(--text-secondary);">\${escapeHtml(shortenHex(item.exportRoot || ''))}</td>
-                  <td style="color: var(--text-muted); font-size: 12px;">\${escapeHtml(dt)}</td>
-                </tr>
-              \`;
-            }).join('');
-          }
-        }
-
-        document.getElementById('last-poll').textContent = new Date().toLocaleTimeString();
       } catch (err) {
-        document.getElementById('pulse-dot').className = 'pulse-dot error';
+        document.getElementById('pulse-dot').style.background = 'var(--accent-rose)';
         document.getElementById('connection-status').textContent = 'Disconnected';
       }
     }
 
-    // Initial poll and recurring 2.5s polling loop
-    pollDashboard();
-    setInterval(pollDashboard, 2500);
+    // Toggle Offer Form
+    document.getElementById('toggle-offer-form').addEventListener('click', () => {
+      const f = document.getElementById('offer-form');
+      f.style.display = f.style.display === 'none' ? 'grid' : 'none';
+    });
+
+    document.getElementById('cancel-offer-btn').addEventListener('click', () => {
+      document.getElementById('offer-form').style.display = 'none';
+    });
+
+    // Create Offer Submit
+    document.getElementById('offer-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const amountEth = document.getElementById('offer-amount-eth').value.trim();
+      const counterpartyDid = document.getElementById('offer-counterparty-did').value.trim();
+      const claimBySec = parseInt(document.getElementById('offer-claim-sec').value, 10);
+      const refundAfterSec = parseInt(document.getElementById('offer-refund-sec').value, 10);
+
+      try {
+        const res = await fetch('/api/deals/offer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amountEth,
+            counterpartyDid: counterpartyDid || undefined,
+            claimBySec,
+            refundAfterSec,
+            expiresSec: 300
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.message || data.error || 'Failed to create offer');
+        }
+        showFeedback('Offer created successfully!');
+        document.getElementById('offer-form').style.display = 'none';
+        await poll();
+      } catch (err) {
+        showFeedback(err.message, true);
+      }
+    });
+
+    // Send Chat Submit
+    document.getElementById('chat-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('chat-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.message || data.error || 'Failed to send chat');
+        }
+        input.value = '';
+        await poll();
+      } catch (err) {
+        showFeedback(err.message, true);
+      }
+    });
+
+    poll();
+    setInterval(poll, 2000);
   </script>
 </body>
 </html>`;
@@ -923,13 +1123,18 @@ export class DealWalletServer {
   public readonly app: DealWalletApp;
   public readonly host: string;
   public readonly port: number;
+  public readonly syncIntervalMs: number;
   private _server: http.Server | null = null;
   private _actualPort: number = 0;
+  private _syncTimer: NodeJS.Timeout | null = null;
+  private _isSyncing: boolean = false;
+  private _messageCache: SafeMessageDto[] = [];
 
   constructor(config: DealWalletServerConfig) {
     this.app = config.app;
     this.host = config.host ?? "127.0.0.1";
     this.port = config.port ?? 3456;
+    this.syncIntervalMs = config.syncIntervalMs ?? 2000;
 
     // Strict loopback validation
     if (this.host !== "127.0.0.1" && this.host !== "localhost" && this.host !== "::1") {
@@ -949,8 +1154,85 @@ export class DealWalletServer {
     return this._server;
   }
 
+  get messageCache(): SafeMessageDto[] {
+    return [...this._messageCache];
+  }
+
   /**
-   * Starts the local HTTP loopback server.
+   * Controlled background sync loop around app.sync().
+   * Prevents overlapping syncs and recovers cleanly from transient failures.
+   */
+  public async triggerSync(): Promise<void> {
+    if (this._isSyncing) return;
+    this._isSyncing = true;
+    try {
+      await this.app.sync();
+      await this.refreshMessageCache();
+    } catch {
+      // Recover cleanly from transient sync failures without crashing
+    } finally {
+      this._isSyncing = false;
+    }
+  }
+
+  /**
+   * Updates the presentation message cache from transport records.
+   * Redacts any secret preimages and never exposes private keys/seeds/signatures.
+   */
+  private async refreshMessageCache(): Promise<void> {
+    const raw = await this.app.transport.fetchMessages(this.app.room);
+    const seen = new Set<string>();
+    const safeList: SafeMessageDto[] = [];
+
+    for (const r of raw) {
+      const dedupKey = `${r.seq}-${r.from}-${r.nonce}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+
+      const isProto = isTclkLine(r.text);
+      let frameType: string | null = null;
+      let contractOrOfferId: string | null = null;
+      let safeText = r.text;
+
+      if (isProto) {
+        const frame = tryDecodeTclkFrame(r.text);
+        if (frame) {
+          frameType = frame.type;
+          const frameObj = frame as unknown as Record<string, unknown>;
+          if (typeof frameObj.contract === "string") {
+            contractOrOfferId = frameObj.contract;
+          } else if (typeof frameObj.id === "string") {
+            contractOrOfferId = frameObj.id;
+          } else if (typeof frameObj.ref === "string") {
+            contractOrOfferId = frameObj.ref;
+          }
+
+          // Redact reveal secret so preimage NEVER appears in HTTP presentation responses
+          if (frame.type === "reveal") {
+            safeText = r.text.replace(/"secret"\s*:\s*"[^"]+"/g, '"secret":"[REDACTED]"');
+          }
+        }
+      }
+
+      safeList.push({
+        seq: r.seq,
+        ts: r.ts,
+        from: r.from,
+        isSelf: r.from === this.app.session.did,
+        text: safeText,
+        isProtocol: isProto,
+        frameType,
+        contractOrOfferId,
+      });
+    }
+
+    // Preserve chronological ordering by seq
+    safeList.sort((a, b) => a.seq - b.seq);
+    this._messageCache = safeList;
+  }
+
+  /**
+   * Starts the local HTTP loopback server and background sync timer.
    */
   async start(): Promise<{ host: string; port: number; url: string }> {
     if (this._server) {
@@ -964,7 +1246,7 @@ export class DealWalletServer {
         reject(err);
       });
 
-      server.listen(this.port, this.host, () => {
+      server.listen(this.port, this.host, async () => {
         const addr = server.address();
         if (typeof addr === "object" && addr !== null) {
           this._actualPort = addr.port;
@@ -972,15 +1254,28 @@ export class DealWalletServer {
           this._actualPort = this.port;
         }
         this._server = server;
+
+        // Perform initial controlled sync
+        await this.triggerSync();
+
+        // Start background synchronization loop
+        this._syncTimer = setInterval(() => {
+          this.triggerSync().catch(() => {});
+        }, this.syncIntervalMs);
+
         resolve({ host: this.host, port: this.actualPort, url: this.url });
       });
     });
   }
 
   /**
-   * Shuts down the HTTP server cleanly.
+   * Shuts down the HTTP server cleanly and stops the background sync timer.
    */
   async stop(): Promise<void> {
+    if (this._syncTimer) {
+      clearInterval(this._syncTimer);
+      this._syncTimer = null;
+    }
     if (!this._server) return;
     return new Promise((resolve, reject) => {
       this._server!.close((err) => {
@@ -992,53 +1287,48 @@ export class DealWalletServer {
   }
 
   /**
-   * Dispatches incoming HTTP requests with strict method and routing validation.
+   * Dispatches incoming HTTP requests with strict validation, CORS prevention,
+   * CSP headers, and secure routing.
    */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const parsedUrl = new URL(req.url ?? "/", `http://${this.host}`);
     const pathname = parsedUrl.pathname;
     const method = req.method?.toUpperCase() ?? "GET";
 
-    // Set strict baseline security headers on every response
+    // Strict security headers on every response
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; font-src https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline'; connect-src 'self'",
+    );
 
-    // Standard allowed routes
-    const allowedRoutes = ["/", "/index.html", "/api/health", "/api/session", "/api/balance", "/api/deals", "/api/archives"];
-
-    if (!allowedRoutes.includes(pathname)) {
-      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "Not Found", message: `Cannot ${method} ${pathname}` }));
-      return;
-    }
-
-    // Phase 4C-1 strictly supports GET and HEAD for read-only operations
-    if (method !== "GET" && method !== "HEAD") {
-      res.writeHead(405, {
-        "Content-Type": "application/json; charset=utf-8",
-        "Allow": "GET, HEAD",
-      });
-      res.end(JSON.stringify({ error: "Method Not Allowed", message: `Method ${method} not allowed for ${pathname}` }));
-      return;
-    }
+    // Route matching
+    const isDealAction = /^\/api\/deals\/([^/]+)\/(accept|lock|verify|reveal|claim|refund|cancel)$/.exec(pathname);
 
     try {
+      // 1. Static & Presentation routes (GET / HEAD)
       if (pathname === "/" || pathname === "/index.html") {
+        if (method !== "GET" && method !== "HEAD") {
+          this.sendMethodNotAllowed(res, "GET, HEAD", pathname, method);
+          return;
+        }
         const html = renderDashboardHtml();
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Content-Length": Buffer.byteLength(html),
         });
-        if (method === "HEAD") {
-          res.end();
-        } else {
-          res.end(html);
-        }
+        if (method === "HEAD") res.end();
+        else res.end(html);
         return;
       }
 
       if (pathname === "/api/health") {
+        if (method !== "GET" && method !== "HEAD") {
+          this.sendMethodNotAllowed(res, "GET, HEAD", pathname, method);
+          return;
+        }
         const data: HealthResponseDto = {
           status: "ok",
           uptime: process.uptime(),
@@ -1049,7 +1339,10 @@ export class DealWalletServer {
       }
 
       if (pathname === "/api/session") {
-        // Return ONLY safe public metadata
+        if (method !== "GET" && method !== "HEAD") {
+          this.sendMethodNotAllowed(res, "GET, HEAD", pathname, method);
+          return;
+        }
         const data: SafeSessionMetadataDto = {
           did: this.app.session.did,
           evmAddress: this.app.session.evmAddress,
@@ -1063,6 +1356,10 @@ export class DealWalletServer {
       }
 
       if (pathname === "/api/balance") {
+        if (method !== "GET" && method !== "HEAD") {
+          this.sendMethodNotAllowed(res, "GET, HEAD", pathname, method);
+          return;
+        }
         const eth = await this.app.session.getEthBalance();
         const data: SafeBalanceDto = {
           balance: eth.balance.toString(),
@@ -1075,6 +1372,10 @@ export class DealWalletServer {
       }
 
       if (pathname === "/api/deals") {
+        if (method !== "GET" && method !== "HEAD") {
+          this.sendMethodNotAllowed(res, "GET, HEAD", pathname, method);
+          return;
+        }
         const active = this.app.listActiveDeals().map(toSafeDealDto);
         const completed = this.app.listCompletedDeals().map(toSafeDealDto);
         const data: SafeDealsResponseDto = {
@@ -1091,6 +1392,10 @@ export class DealWalletServer {
       }
 
       if (pathname === "/api/archives") {
+        if (method !== "GET" && method !== "HEAD") {
+          this.sendMethodNotAllowed(res, "GET, HEAD", pathname, method);
+          return;
+        }
         const archives = await this.app.listArchives();
         const data: SafeArchivesResponseDto = {
           archives,
@@ -1099,14 +1404,234 @@ export class DealWalletServer {
         this.sendJsonResponse(res, 200, data, method === "HEAD");
         return;
       }
+
+      // 2. Room Messages Endpoint (GET /api/messages)
+      if (pathname === "/api/messages") {
+        if (method !== "GET" && method !== "HEAD") {
+          this.sendMethodNotAllowed(res, "GET, HEAD", pathname, method);
+          return;
+        }
+        // Returns safe messages from in-memory cache without triggering remote fetch
+        const data: SafeMessagesResponseDto = {
+          messages: this.messageCache,
+          count: this._messageCache.length,
+        };
+        this.sendJsonResponse(res, 200, data, method === "HEAD");
+        return;
+      }
+
+      // 3. Room Chat Endpoint (POST /api/chat)
+      if (pathname === "/api/chat") {
+        if (method !== "POST") {
+          this.sendMethodNotAllowed(res, "POST", pathname, method);
+          return;
+        }
+
+        const body = await readJsonBody<{ text?: string }>(req);
+        if (typeof body.text !== "string") {
+          this.sendError(res, 400, "Bad Request", "Missing or invalid 'text' property in JSON payload");
+          return;
+        }
+
+        const trimmed = body.text.trim();
+        if (trimmed.length === 0) {
+          this.sendError(res, 400, "Bad Request", "Chat text cannot be empty");
+          return;
+        }
+        if (trimmed.length > 4096) {
+          this.sendError(res, 400, "Bad Request", "Chat text exceeds maximum limit of 4096 characters");
+          return;
+        }
+
+        // Delegate to orchestrator/session - never sign in HTTP layer
+        await this.app.sendChat(trimmed);
+        await this.triggerSync();
+
+        this.sendJsonResponse(res, 200, { ok: true });
+        return;
+      }
+
+      // 4. Deal Offer Endpoint (POST /api/deals/offer)
+      if (pathname === "/api/deals/offer") {
+        if (method !== "POST") {
+          this.sendMethodNotAllowed(res, "POST", pathname, method);
+          return;
+        }
+
+        const body = await readJsonBody<CreateOfferRequestDto>(req);
+
+        if (!body || typeof body.amountEth !== "string" || !body.amountEth.trim()) {
+          this.sendError(res, 400, "Bad Request", "Missing or invalid 'amountEth' string in request body");
+          return;
+        }
+
+        // Exact integer conversion to wei using viem parseEther (no float arithmetic)
+        let weiBigInt: bigint;
+        try {
+          weiBigInt = parseEther(body.amountEth.trim());
+        } catch {
+          this.sendError(res, 400, "Bad Request", `Invalid amount format: ${body.amountEth}`);
+          return;
+        }
+
+        if (weiBigInt <= 0n) {
+          this.sendError(res, 400, "Bad Request", "Amount must be strictly positive");
+          return;
+        }
+
+        // Deadlines validation
+        const claimBySec = typeof body.claimBySec === "number" ? body.claimBySec : 600;
+        const refundAfterSec = typeof body.refundAfterSec === "number" ? body.refundAfterSec : 1200;
+        const expiresSec = typeof body.expiresSec === "number" ? body.expiresSec : 300;
+
+        if (claimBySec <= 0 || refundAfterSec <= 0 || expiresSec <= 0) {
+          this.sendError(res, 400, "Bad Request", "Deadlines must be positive seconds");
+          return;
+        }
+
+        if (claimBySec >= refundAfterSec) {
+          this.sendError(res, 400, "Bad Request", "Strict ordering required: claimBySec must be less than refundAfterSec");
+          return;
+        }
+
+        // Counterparty DID validation
+        if (body.counterpartyDid !== undefined) {
+          if (typeof body.counterpartyDid !== "string" || !body.counterpartyDid.startsWith("did:key:")) {
+            this.sendError(res, 400, "Bad Request", "Invalid counterparty DID format; must start with did:key:");
+            return;
+          }
+        }
+
+        // Role validation against server wallet configured role
+        const sessionRole = this.app.session.role;
+        let role: "payer" | "payee" = "payer";
+        if (body.role) {
+          if (body.role !== "payer" && body.role !== "payee") {
+            this.sendError(res, 400, "Bad Request", "Role must be 'payer' or 'payee'");
+            return;
+          }
+          if (sessionRole === "payer" && body.role === "payee") {
+            this.sendError(res, 400, "Bad Request", "Configured wallet role is payer; cannot create offer as payee");
+            return;
+          }
+          if (sessionRole === "payee" && body.role === "payer") {
+            this.sendError(res, 400, "Bad Request", "Configured wallet role is payee; cannot create offer as payer");
+            return;
+          }
+          role = body.role;
+        } else {
+          role = sessionRole === "payee" ? "payee" : "payer";
+        }
+
+        const now = Date.now();
+        const created = await this.app.createOffer({
+          role,
+          amount: weiBigInt.toString(),
+          asset: "ETH",
+          claimByMs: now + claimBySec * 1000,
+          refundAfterMs: now + refundAfterSec * 1000,
+          expiresMs: now + expiresSec * 1000,
+          counterpartyDid: body.counterpartyDid,
+        });
+
+        // Trigger immediate sync
+        await this.triggerSync();
+
+        this.sendJsonResponse(res, 201, {
+          ok: true,
+          offerId: created.offerId,
+          deal: toSafeDealDto(created.deal),
+        });
+        return;
+      }
+
+      // 5. Deal Action Endpoints (POST /api/deals/:id/action)
+      if (isDealAction) {
+        if (method !== "POST") {
+          this.sendMethodNotAllowed(res, "POST", pathname, method);
+          return;
+        }
+
+        const id = decodeURIComponent(isDealAction[1]);
+        const action = isDealAction[2];
+
+        // Consume body safely if any (e.g. cancel reason)
+        const body = await readJsonBody<{ reason?: string }>(req);
+
+        // Disallow browser from submitting secrets/preimages
+        if ((body as any).secret || (body as any).preimage) {
+          this.sendError(res, 400, "Bad Request", "Preimages and secrets are strictly managed server-side and cannot be submitted via HTTP");
+          return;
+        }
+
+        switch (action) {
+          case "accept": {
+            await this.app.acceptDeal({ offerId: id });
+            break;
+          }
+          case "lock": {
+            await this.app.lockFunds(id);
+            break;
+          }
+          case "verify": {
+            await this.app.verifyLock(id);
+            break;
+          }
+          case "reveal": {
+            await this.app.revealSecret(id);
+            break;
+          }
+          case "claim": {
+            await this.app.claimFunds(id);
+            break;
+          }
+          case "refund": {
+            await this.app.refundDeal(id);
+            break;
+          }
+          case "cancel": {
+            await this.app.cancelDeal(id, body?.reason);
+            break;
+          }
+        }
+
+        // Trigger immediate sync to update deal states and messages
+        await this.triggerSync();
+
+        const updatedDeal = this.app.getDeal(id);
+        const resDto: DealActionResponseDto = {
+          ok: true,
+          action,
+          deal: updatedDeal ? toSafeDealDto(updatedDeal) : undefined,
+        };
+        this.sendJsonResponse(res, 200, resDto);
+        return;
+      }
+
+      // Route Not Found
+      this.sendError(res, 404, "Not Found", `Cannot ${method} ${pathname}`);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "Internal Server Error", message }));
+      if (err instanceof HttpPayloadError) {
+        this.sendError(res, err.statusCode, err.name, err.message);
+        return;
+      }
+
+      if (err instanceof UnauthorizedActorError || err instanceof DealStateMismatchError) {
+        this.sendError(res, 400, "Bad Request", sanitizeErrorMessage(err));
+        return;
+      }
+
+      if (err instanceof OrchestratorError) {
+        this.sendError(res, 400, "Bad Request", sanitizeErrorMessage(err));
+        return;
+      }
+
+      // Default safe error response
+      this.sendError(res, 500, "Internal Server Error", sanitizeErrorMessage(err));
     }
   }
 
-  private sendJsonResponse(res: http.ServerResponse, status: number, body: unknown, isHead: boolean): void {
+  private sendJsonResponse(res: http.ServerResponse, status: number, body: unknown, isHead = false): void {
     const json = JSON.stringify(body);
     res.writeHead(status, {
       "Content-Type": "application/json; charset=utf-8",
@@ -1117,6 +1642,19 @@ export class DealWalletServer {
     } else {
       res.end(json);
     }
+  }
+
+  private sendError(res: http.ServerResponse, status: number, error: string, message: string): void {
+    const payload = {
+      error,
+      message: sanitizeErrorMessage(message),
+    };
+    this.sendJsonResponse(res, status, payload);
+  }
+
+  private sendMethodNotAllowed(res: http.ServerResponse, allow: string, pathname: string, method: string): void {
+    res.setHeader("Allow", allow);
+    this.sendError(res, 405, "Method Not Allowed", `Method ${method} not allowed for ${pathname}`);
   }
 }
 
@@ -1204,14 +1742,14 @@ export async function startDealWalletServer(options: CliOptions): Promise<DealWa
 // -----------------------------------------------------------------------------
 
 const currentFileUrl = import.meta.url;
-const executedFileUrl = process.argv[1] ? `file:///${path.resolve(process.argv[1]).replace(/\\\\/g, "/")}` : "";
+const executedFileUrl = process.argv[1] ? `file:///${path.resolve(process.argv[1]).replace(/\\/g, "/")}` : "";
 
 if (currentFileUrl === executedFileUrl) {
   const opts = parseCliArgs();
   startDealWalletServer(opts)
     .then((srv) => {
       console.log(`=======================================================`);
-      console.log(`⚡ Technocore Deal Wallet Server (Phase 4C-1)`);
+      console.log(`⚡ Technocore Deal Wallet Server (Phase 4C-2)`);
       console.log(`=======================================================`);
       console.log(`URL:      ${srv.url}`);
       console.log(`DID:      ${srv.app.session.did}`);

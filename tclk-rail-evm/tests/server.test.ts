@@ -19,6 +19,10 @@ import {
   type SafeDealsResponseDto,
   type SafeArchivesResponseDto,
   type HealthResponseDto,
+  type SafeMessageDto,
+  type SafeMessagesResponseDto,
+  type CreateOfferRequestDto,
+  type DealActionResponseDto,
 } from "../src/index.js";
 
 // Windows Anvil path fallback
@@ -468,6 +472,431 @@ describe("Phase 4C-1: Deal Wallet Local HTTP Server & Dashboard API", () => {
     } finally {
       await server0.stop();
       await server1.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 10. Background Sync Loop & Clean Shutdown
+  // ---------------------------------------------------------------------------
+
+  it("runs background sync loop periodically and shuts down cleanly", async () => {
+    const session = await WalletSession.fromAnvil(0, {
+      htlcAddress: anvil.htlcAddress,
+      rpcUrl,
+      publicClient: anvil.publicClient,
+    });
+    const transport = new InMemoryTechnocoreTransport();
+    const app = new DealWalletApp({ session, room: "test-sync-loop", transport });
+    const server = new DealWalletServer({ app, host: "127.0.0.1", port: 0, syncIntervalMs: 50 });
+
+    await server.start();
+    try {
+      expect(server.messageCache).toHaveLength(0);
+
+      // Publish external message directly into transport
+      await transport.sendSigned("test-sync-loop", "external message", session.signer);
+
+      // Wait for background sync loop to pick it up
+      await new Promise((r) => setTimeout(r, 120));
+
+      const res = await fetch(`${server.url}/api/messages`);
+      const data: SafeMessagesResponseDto = await res.json();
+      expect(data.count).toBe(1);
+      expect(data.messages[0].text).toBe("external message");
+    } finally {
+      await server.stop();
+      expect(server.server).toBeNull();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 11. GET /api/messages (Safe projection, Deduplication & Ordering)
+  // ---------------------------------------------------------------------------
+
+  it("returns safe room messages with chronological ordering and deduplication", async () => {
+    const session = await WalletSession.fromAnvil(0, {
+      htlcAddress: anvil.htlcAddress,
+      rpcUrl,
+      publicClient: anvil.publicClient,
+    });
+    const transport = new InMemoryTechnocoreTransport();
+    const app = new DealWalletApp({ session, room: "test-msgs-room", transport });
+    const server = new DealWalletServer({ app, host: "127.0.0.1", port: 0 });
+
+    await server.start();
+    try {
+      await transport.sendSigned("test-msgs-room", "hello world", session.signer);
+      await transport.sendSigned("test-msgs-room", "second message", session.signer);
+      await server.triggerSync();
+
+      const res = await fetch(`${server.url}/api/messages`);
+      expect(res.status).toBe(200);
+      const data: SafeMessagesResponseDto = await res.json();
+      expect(data.count).toBe(2);
+      expect(data.messages[0].seq).toBeLessThan(data.messages[1].seq);
+      expect(data.messages[0].isSelf).toBe(true);
+      expect(data.messages[0].text).toBe("hello world");
+
+      // Verify no cryptographic secrets or internal signer state exposed
+      const serialized = JSON.stringify(data);
+      expect(serialized).not.toContain("sig");
+      expect(serialized).not.toContain("nonce");
+      expect(serialized).not.toContain("privateKey");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 12. POST /api/chat (Validation & Ingestion)
+  // ---------------------------------------------------------------------------
+
+  it("handles POST /api/chat with strict validation", async () => {
+    const session = await WalletSession.fromAnvil(0, {
+      htlcAddress: anvil.htlcAddress,
+      rpcUrl,
+      publicClient: anvil.publicClient,
+    });
+    const transport = new InMemoryTechnocoreTransport();
+    const app = new DealWalletApp({ session, room: "test-chat-room", transport });
+    const server = new DealWalletServer({ app, host: "127.0.0.1", port: 0 });
+
+    await server.start();
+    try {
+      // 1. Successful chat
+      const okRes = await fetch(`${server.url}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "  hello from client  " }),
+      });
+      expect(okRes.status).toBe(200);
+      const okData = await okRes.json();
+      expect(okData.ok).toBe(true);
+
+      const msgsRes = await fetch(`${server.url}/api/messages`);
+      const msgsData: SafeMessagesResponseDto = await msgsRes.json();
+      expect(msgsData.count).toBe(1);
+      expect(msgsData.messages[0].text).toBe("hello from client"); // trimmed
+
+      // 2. Reject empty text
+      const emptyRes = await fetch(`${server.url}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "   " }),
+      });
+      expect(emptyRes.status).toBe(400);
+
+      // 3. Reject oversized text (>4096 chars)
+      const oversizedText = "x".repeat(4097);
+      const overRes = await fetch(`${server.url}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: oversizedText }),
+      });
+      expect(overRes.status).toBe(400);
+
+      // 4. Reject malformed JSON
+      const malformedRes = await fetch(`${server.url}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{ bad json",
+      });
+      expect(malformedRes.status).toBe(400);
+
+      // 5. Reject oversized request payload (>64KB)
+      const hugePayload = JSON.stringify({ text: "y".repeat(70000) });
+      const hugeRes = await fetch(`${server.url}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: hugePayload,
+      });
+      expect(hugeRes.status).toBe(413);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 13. POST /api/deals/offer (Validation & Creation)
+  // ---------------------------------------------------------------------------
+
+  it("handles POST /api/deals/offer and enforces strict validation and integer conversion", async () => {
+    const session = await WalletSession.fromAnvil(0, {
+      htlcAddress: anvil.htlcAddress,
+      rpcUrl,
+      publicClient: anvil.publicClient,
+      role: "payer",
+    });
+    const transport = new InMemoryTechnocoreTransport();
+    const app = new DealWalletApp({ session, room: "test-offer-room", transport });
+    const server = new DealWalletServer({ app, host: "127.0.0.1", port: 0 });
+
+    await server.start();
+    try {
+      // 1. Successful offer creation
+      const res = await fetch(`${server.url}/api/deals/offer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountEth: "0.05",
+          claimBySec: 600,
+          refundAfterSec: 1200,
+          expiresSec: 300,
+        }),
+      });
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.ok).toBe(true);
+      expect(data.offerId).toBeDefined();
+      expect(data.deal.amount).toBe(parseEther("0.05").toString()); // Exact 50000000000000000 wei
+      expect(data.deal.status).toBe(DealStatus.OFFERED);
+
+      // 2. Reject non-positive amount
+      const nonPosRes = await fetch(`${server.url}/api/deals/offer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amountEth: "0" }),
+      });
+      expect(nonPosRes.status).toBe(400);
+
+      // 3. Reject deadline ordering violation (claimBy >= refundAfter)
+      const orderRes = await fetch(`${server.url}/api/deals/offer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountEth: "0.1",
+          claimBySec: 1200,
+          refundAfterSec: 600,
+        }),
+      });
+      expect(orderRes.status).toBe(400);
+
+      // 4. Reject role contradiction (payer session trying to create offer as payee)
+      const roleRes = await fetch(`${server.url}/api/deals/offer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountEth: "0.1",
+          role: "payee",
+        }),
+      });
+      expect(roleRes.status).toBe(400);
+
+      // 5. Reject invalid counterparty DID
+      const didRes = await fetch(`${server.url}/api/deals/offer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountEth: "0.1",
+          counterpartyDid: "not-a-did",
+        }),
+      });
+      expect(didRes.status).toBe(400);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 14. Action Endpoints Security (Reject browser secrets & unauthorized roles)
+  // ---------------------------------------------------------------------------
+
+  it("strictly rejects browser preimages and unauthorized actions", async () => {
+    const session = await WalletSession.fromAnvil(0, {
+      htlcAddress: anvil.htlcAddress,
+      rpcUrl,
+      publicClient: anvil.publicClient,
+      role: "payer",
+    });
+    const transport = new InMemoryTechnocoreTransport();
+    const app = new DealWalletApp({ session, room: "test-sec-actions", transport });
+    const server = new DealWalletServer({ app, host: "127.0.0.1", port: 0 });
+
+    await server.start();
+    try {
+      // Reject client trying to submit a secret
+      const resSecret = await fetch(`${server.url}/api/deals/any-id/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret: "0x1234" }),
+      });
+      expect(resSecret.status).toBe(400);
+      const secData = await resSecret.json();
+      expect(secData.message).toContain("strictly managed server-side");
+
+      // Reject non-existent deal action cleanly without stack trace
+      const resNotFound = await fetch(`${server.url}/api/deals/non-existent/lock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(resNotFound.status).toBe(400);
+      const nfData = await resNotFound.json();
+      expect(nfData.error).toBe("Bad Request");
+      expect(nfData).not.toHaveProperty("stack");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 15. Real Two-Instance Anvil Integration Test (Alice :3456, Bob :3457)
+  // ---------------------------------------------------------------------------
+
+  it("executes full end-to-end deal lifecycle between Alice and Bob instances over Anvil", async () => {
+    const sharedTransport = new InMemoryTechnocoreTransport();
+    const roomName = "shared-htlc-room";
+
+    // Alice: Payer on Anvil Account 0
+    const aliceSession = await WalletSession.fromAnvil(0, {
+      htlcAddress: anvil.htlcAddress,
+      rpcUrl,
+      publicClient: anvil.publicClient,
+      role: "payer",
+    });
+    const aliceApp = new DealWalletApp({
+      session: aliceSession,
+      room: roomName,
+      transport: sharedTransport,
+    });
+    const aliceServer = new DealWalletServer({ app: aliceApp, host: "127.0.0.1", port: 0 });
+
+    // Bob: Payee on Anvil Account 1
+    const bobSession = await WalletSession.fromAnvil(1, {
+      htlcAddress: anvil.htlcAddress,
+      rpcUrl,
+      publicClient: anvil.publicClient,
+      role: "payee",
+    });
+    const bobApp = new DealWalletApp({
+      session: bobSession,
+      room: roomName,
+      transport: sharedTransport,
+    });
+    const bobServer = new DealWalletServer({ app: bobApp, host: "127.0.0.1", port: 0 });
+
+    // Pair address resolvers for both participants
+    aliceSession.addressResolver.set(bobSession.did, bobSession.evmAddress);
+    bobSession.addressResolver.set(aliceSession.did, aliceSession.evmAddress);
+
+    await aliceServer.start();
+    await bobServer.start();
+
+    try {
+      // Step 1: Alice sends a chat message
+      const chatRes = await fetch(`${aliceServer.url}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Ready to initiate deal" }),
+      });
+      expect(chatRes.status).toBe(200);
+
+      // Bob syncs and sees Alice's chat
+      await bobServer.triggerSync();
+      const bobMsgsRes = await fetch(`${bobServer.url}/api/messages`);
+      const bobMsgs: SafeMessagesResponseDto = await bobMsgsRes.json();
+      expect(bobMsgs.count).toBe(1);
+      expect(bobMsgs.messages[0].text).toBe("Ready to initiate deal");
+      expect(bobMsgs.messages[0].isSelf).toBe(false);
+
+      // Step 2: Alice creates an offer (0.01 ETH)
+      const offerRes = await fetch(`${aliceServer.url}/api/deals/offer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountEth: "0.01",
+          counterpartyDid: bobSession.did,
+          claimBySec: 120,
+          refundAfterSec: 300,
+          expiresSec: 60,
+        }),
+      });
+      expect(offerRes.status).toBe(201);
+      const offerData = await offerRes.json();
+      const offerId = offerData.offerId;
+      expect(offerId).toBeDefined();
+
+      // Step 3: Bob syncs and accepts the offer
+      await bobServer.triggerSync();
+      const acceptRes = await fetch(`${bobServer.url}/api/deals/${encodeURIComponent(offerId)}/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(acceptRes.status).toBe(200);
+      const acceptData: DealActionResponseDto = await acceptRes.json();
+      expect(acceptData.ok).toBe(true);
+      expect(acceptData.deal?.status).toBe(DealStatus.ACCEPTED);
+      const contractId = acceptData.deal!.contractId;
+      expect(contractId).toBeDefined();
+
+      // Step 4: Alice syncs and locks funds on Anvil HTLC
+      await aliceServer.triggerSync();
+      const lockRes = await fetch(`${aliceServer.url}/api/deals/${encodeURIComponent(contractId)}/lock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(lockRes.status).toBe(200);
+      const lockData: DealActionResponseDto = await lockRes.json();
+      expect([DealStatus.LOCKED, DealStatus.VERIFIED]).toContain(lockData.deal?.status);
+
+      // Step 5: Bob syncs and verifies the lock on-chain
+      await bobServer.triggerSync();
+      const verifyRes = await fetch(`${bobServer.url}/api/deals/${encodeURIComponent(contractId)}/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(verifyRes.status).toBe(200);
+      const verifyData: DealActionResponseDto = await verifyRes.json();
+      expect(verifyData.deal?.status).toBe(DealStatus.VERIFIED);
+
+      // Step 6: Bob reveals the secret
+      const revealRes = await fetch(`${bobServer.url}/api/deals/${encodeURIComponent(contractId)}/reveal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(revealRes.status).toBe(200);
+      const revealData: DealActionResponseDto = await revealRes.json();
+      expect(revealData.deal?.status).toBe(DealStatus.REVEALED);
+
+      // CRITICAL SECURITY ASSERTION: Preimage NEVER appears in HTTP responses
+      const revealBodyStr = JSON.stringify(revealData);
+      expect(revealBodyStr).not.toContain("preimage");
+      expect((revealData.deal as any)?.secret).toBeUndefined();
+      expect(revealData.deal?.statement).toBeDefined();
+
+      // Check messages endpoint on Alice's server: reveal secret is redacted
+      await aliceServer.triggerSync();
+      const aliceMsgsRes = await fetch(`${aliceServer.url}/api/messages`);
+      const aliceMsgs: SafeMessagesResponseDto = await aliceMsgsRes.json();
+      const revealMsg = aliceMsgs.messages.find((m) => m.frameType === "reveal");
+      expect(revealMsg).toBeDefined();
+      expect(revealMsg?.text).toContain("[REDACTED]");
+
+      // Step 7: Bob claims the funds on Anvil HTLC
+      const claimRes = await fetch(`${bobServer.url}/api/deals/${encodeURIComponent(contractId)}/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(claimRes.status).toBe(200);
+      const claimData: DealActionResponseDto = await claimRes.json();
+      expect(claimData.deal?.status).toBe(DealStatus.CLAIMED);
+      expect(claimData.deal?.isTerminal).toBe(true);
+
+      // Step 8: Alice syncs and sees the terminal CLAIMED deal
+      await aliceServer.triggerSync();
+      const aliceDealsRes = await fetch(`${aliceServer.url}/api/deals`);
+      const aliceDeals: SafeDealsResponseDto = await aliceDealsRes.json();
+      expect(aliceDeals.completed).toHaveLength(1);
+      expect(aliceDeals.completed[0].contractId).toBe(contractId);
+      expect(aliceDeals.completed[0].status).toBe(DealStatus.CLAIMED);
+    } finally {
+      await aliceServer.stop();
+      await bobServer.stop();
     }
   });
 });
