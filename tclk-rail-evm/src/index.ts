@@ -123,3 +123,14 @@ export {
 } from "./app/types.js";
 export { WalletSession } from "./app/session.js";
 export { ArchiveStore } from "./app/store.js";
+export {
+  DealWalletApp,
+  type DealWalletAppConfig,
+  type CreateOfferParams,
+  type AcceptDealParams,
+  OrchestratorError,
+  UnknownTransactionOutcomeError,
+  PreimageNotFoundError,
+  DealStateMismatchError,
+  UnauthorizedActorError,
+} from "./app/orchestrator.js";
