@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TC-Ledger — Independently Verifiable Evidence for Technocore Activity</title>
+  <meta name="description" content="A reproducible, self-contained evidence verification layer for Technocore room exports. Cryptographic commitments, Merkle inclusion proofs, and append-only consistency.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%2310141d'/><text x='50%' y='55%' dominant-baseline='middle' text-anchor='middle' fill='%2338bdf8' font-size='48' font-family='monospace' font-weight='bold'>TC</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Navigation -->
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="#" class="brand">
+        <span class="brand-name">TC-Ledger</span>
+        <span class="badge-version">v0.3.1</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#problem">The Problem</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#demo">Interactive Demo</a>
+        <a href="#c7-consistency">C7 Consistency</a>
+        <a href="#guarantees">Guarantees</a>
+        <a href="#proposal">Integration Proposal</a>
+        <a href="https://github.com/mrchandu1462-ux/tc-ledger" target="_blank" rel="noopener" class="btn-nav">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Section 1: Hero -->
+    <section class="hero-section">
+      <div class="container hero-container">
+        <div class="hero-badge">Open Source Protocol Layer · Apache-2.0</div>
+        <h1 class="hero-title">Independently verifiable evidence for Technocore activity.</h1>
+        <p class="hero-subtitle">
+          Turn ephemeral, signed JSONL chat streams into deterministic cryptographic commitments, Merkle inclusion proofs, and append-only consistency guarantees that anyone can verify offline without network access or downloading full exports.
+        </p>
+        <div class="hero-actions">
+          <a href="https://github.com/mrchandu1462-ux/tc-ledger" target="_blank" rel="noopener" class="btn btn-primary">Explore GitHub</a>
+          <a href="#demo" class="btn btn-secondary">Run the Demo</a>
+        </div>
+        <div class="hero-metrics">
+          <div class="metric-item">
+            <span class="metric-val">v0.3.1</span>
+            <span class="metric-lbl">v0.3.1 — SPEC FROZEN</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-val">196</span>
+            <span class="metric-lbl">Python Tests</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-val">140</span>
+            <span class="metric-lbl">TypeScript Tests</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-val">33</span>
+            <span class="metric-lbl">Foundry Tests</span>
+          </div>
+          <div class="metric-item metric-item-wide">
+            <span class="metric-val metric-val-inline">VERIFY INCLUSION OFFLINE</span>
+            <span class="metric-lbl">Against a root you already hold.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: The Problem -->
+    <section id="problem" class="section">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Trust &amp; Boundaries</span>
+          <h2 class="section-title">The Challenge: Transient Log Retention</h2>
+        </div>
+
+        <div class="trust-boundary-banner">
+          <div class="trust-banner-badge">Core Trust Boundary</div>
+          <p class="trust-banner-text">
+            Verification is conditional on trusted inputs. TC-Ledger verifies a retained export against a root you already hold. The cryptographic artifact does not establish the provenance of that root, authenticate envelope metadata, or provide trusted timestamping by itself.
+          </p>
+        </div>
+        <div class="grid grid-2">
+          <div class="card card-outline">
+            <h3>Technocore Chat Streams</h3>
+            <p>
+              Technocore servers retain and emit raw JSONL exports of room conversations containing Ed25519-signed messages from decentralized identifiers (<code>did:key:z6Mk...</code>).
+            </p>
+            <p>
+              However, retained server history can become unavailable through storage retention and log eviction policies. When messages are evicted, counterparties and external auditors lose the ability to prove historical events unless export files and cryptographic anchors were preserved.
+            </p>
+            <p>
+              <strong>TC-Ledger allows preserved exports and evidence to be independently verified offline</strong>. You hold the proof. Keeping it is your responsibility.
+            </p>
+          </div>
+          <div class="card card-outline highlight-card">
+            <h3>Explicit Trust Boundaries</h3>
+            <p>
+              TC-Ledger is engineered with strict cryptographic conservatism. It operates exclusively on retained artifacts:
+            </p>
+            <ul class="clean-list">
+              <li><strong>No History Recovery</strong>: TC-Ledger does <em>not</em> recover deleted history or reconstruct evicted records.</li>
+              <li><strong>No Full Lifetime Claims</strong>: It does <em>not</em> prove complete room history prior to an export.</li>
+              <li><strong>Retention Limitation</strong>: Eviction can destroy the retained bytes needed to independently verify earlier records. C7 therefore fails when the newer export is no longer an exact prefix of the earlier export.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: How It Works -->
+    <section id="how-it-works" class="section bg-alt">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Architecture</span>
+          <h2 class="section-title">How It Works</h2>
+          <p class="section-desc">A deterministic 8-stage cryptographic pipeline from signed wire records to offline verifier.</p>
+          <div class="jcs-clarification-banner">
+            <strong>JCS vs. Raw-Byte Commitments:</strong> JCS provides deterministic semantic evidence identity; the Merkle commitment covers the exact retained export bytes. They are independent commitments and are not interchangeable. Re-serializing a semantically identical export can change its byte commitment.
+          </div>
+        </div>
+
+        <div class="pipeline-flow">
+          <div class="pipeline-step">
+            <div class="step-num">01</div>
+            <div class="step-content">
+              <h4>Signed Technocore Activity</h4>
+              <p>Author signs UTF-8 wire payload <code>room|nonce|text</code> with Ed25519 private key (<code>did:key:z...</code>).</p>
+            </div>
+          </div>
+          <div class="pipeline-divider">↓</div>
+          <div class="pipeline-step">
+            <div class="step-num">02</div>
+            <div class="step-content">
+              <h4>Ed25519 Signature Verification</h4>
+              <p>Strict canonical Base64URL decoding (exactly 86 chars, zero unused bits) validates signature fail-closed.</p>
+            </div>
+          </div>
+          <div class="pipeline-divider">↓</div>
+          <div class="pipeline-step">
+            <div class="step-num">03</div>
+            <div class="step-content">
+              <h4>Deterministic Evidence Commitment</h4>
+              <p>RFC 8785 JSON Canonicalization Scheme (JCS) produces semantic record ID: <code>tc-ledger:v1:&lt;sha256&gt;</code>.</p>
+            </div>
+          </div>
+          <div class="pipeline-divider">↓</div>
+          <div class="pipeline-step">
+            <div class="step-num">04</div>
+            <div class="step-content">
+              <h4>Exact Export-Byte Commitment</h4>
+              <p>Commits to the exact physical line bytes in source order without re-serialization, preserving exact LF delimiters.</p>
+            </div>
+          </div>
+          <div class="pipeline-divider">↓</div>
+          <div class="pipeline-step">
+            <div class="step-num">05</div>
+            <div class="step-content">
+              <h4>Merkle Root</h4>
+              <p>RFC 6962 tree hash with domain separation: leaf <code>0x00 || raw_bytes</code> and node <code>0x01 || left || right</code>.</p>
+            </div>
+          </div>
+          <div class="pipeline-divider">↓</div>
+          <div class="pipeline-step">
+            <div class="step-num">06</div>
+            <div class="step-content">
+              <h4>Inclusion Proof</h4>
+              <p>Compact audit path allowing any individual physical line to be proven against a known Merkle root.</p>
+            </div>
+          </div>
+          <div class="pipeline-divider">↓</div>
+          <div class="pipeline-step">
+            <div class="step-num">07</div>
+            <div class="step-content">
+              <h4>Append-Only Consistency Proof</h4>
+              <p>RFC 6962 §2.1.2 consistency proof proves that an earlier export generation is an exact prefix of a later export.</p>
+            </div>
+          </div>
+          <div class="pipeline-divider">↓</div>
+          <div class="pipeline-step">
+            <div class="step-num">08</div>
+            <div class="step-content">
+              <h4>Offline Independent Verification</h4>
+              <p>Verifier holds only the single target record, the proof artifact, and expected root. Zero network calls.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 4: Interactive Demo -->
+    <section id="demo" class="section">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Interactive Verification Sandbox</span>
+          <h2 class="section-title">Deterministic In-Browser Verification Demo</h2>
+          <p class="section-desc">
+            Embedded with actual v0.3.1 test vectors (<code>examples/record_1.bin</code> &amp; <code>examples/proof_leaf1.json</code>).
+            Hashes are calculated live in your browser using standard Web Crypto API (SHA-256) to demonstrate that records are tamper-evident relative to a previously recorded root.
+          </p>
+        </div>
+
+        <div class="demo-box">
+          <div class="demo-controls">
+            <button id="btn-reset" class="btn btn-sm btn-active" type="button">Load Authentic Record</button>
+            <button id="btn-tamper" class="btn btn-sm btn-danger" type="button">Simulate Record Tampering</button>
+          </div>
+
+          <div class="demo-grid">
+            <!-- Left: Record Input -->
+            <div class="demo-pane">
+              <div class="pane-header">
+                <span>Raw Record Bytes (Leaf Index 1)</span>
+                <span id="record-status-pill" class="pill pill-green">Authentic</span>
+              </div>
+              <textarea id="record-input" rows="7" spellcheck="false"></textarea>
+              <div class="pane-footer text-dim">
+                <span>Length: <strong id="record-length">255</strong> bytes</span>
+                <span>Room: <strong id="record-room">demo-room</strong></span>
+                <span>Nonce: <strong id="record-nonce">1002</strong></span>
+              </div>
+            </div>
+
+            <!-- Right: Live Hash & Proof Pipeline -->
+            <div class="demo-pane">
+              <div class="pane-header">
+                <span>RFC 6962 Verification Steps</span>
+                <span id="overall-status-pill" class="pill pill-green">VALID</span>
+              </div>
+
+              <div class="verification-step-list">
+                <div class="v-step" id="v-step-sig">
+                  <div class="v-icon" id="icon-sig">✓</div>
+                  <div class="v-details">
+                    <div class="v-label">1. Ed25519 Signature Format</div>
+                    <div class="v-subtext text-dim">Valid 86-char canonical Base64URL encoding</div>
+                  </div>
+                </div>
+
+                <div class="v-step" id="v-step-evidence">
+                  <div class="v-icon" id="icon-evidence">✓</div>
+                  <div class="v-details">
+                    <div class="v-label">2. Deterministic Evidence Commitment (JCS)</div>
+                    <div class="v-hash mono" id="v-evidence-id">tc-ledger:v1:0c7764d88e63b6514ec63eef2ecf30ad8dfd2a02e604fef5743431eb35ec7b6b</div>
+                  </div>
+                </div>
+
+                <div class="v-step" id="v-step-leaf">
+                  <div class="v-icon" id="icon-leaf">✓</div>
+                  <div class="v-details">
+                    <div class="v-label">3. Leaf Hash <code>SHA-256(0x00 || record_bytes)</code></div>
+                    <div class="v-hash mono" id="v-leaf-hash">13dbfe722146b058fe8a560b87ac56be426fc785f907fa061121bd5743d21149</div>
+                    <div class="v-subtext text-dim" id="v-leaf-match">Matches proof leaf hash ✓</div>
+                  </div>
+                </div>
+
+                <div class="v-step" id="v-step-root">
+                  <div class="v-icon" id="icon-root">✓</div>
+                  <div class="v-details">
+                    <div class="v-label">4. Reconstructed Root from Audit Path</div>
+                    <div class="v-hash mono" id="v-reconstructed-root">0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9</div>
+                    <div class="v-subtext text-dim" id="v-root-match">Matches Committed Export Root (Gen 1) ✓</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="explanation-box" id="explanation-box">
+                <strong>Verification Succeeded:</strong> The raw record bytes match leaf index 1 of the committed export root. Inclusion proof is valid against the committed root.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 5: C7 Consistency Demonstration -->
+    <section id="c7-consistency" class="section bg-alt">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">C7 Protocol Layer</span>
+          <h2 class="section-title">Cross-Generation Consistency: Append-Only vs. Eviction</h2>
+          <p class="section-desc">
+            C7 proves consistency between two roots when the newer tree contains the earlier tree as an exact prefix. It does not provide an external witness or prevent divergent histories by itself.
+          </p>
+        </div>
+
+        <div class="grid grid-2">
+          <!-- Scenario A: Valid Append-Only Extension -->
+          <div class="card scenario-card scenario-valid">
+            <div class="scenario-header">
+              <span class="scenario-badge badge-green">Valid Extension</span>
+              <span class="status-indicator text-green">APPEND-ONLY ✓</span>
+            </div>
+            <div class="tree-diagram">
+              <div class="tree-row">
+                <span class="tree-label">Generation 1 (size 4):</span>
+                <div class="leaves-container">
+                  <span class="leaf-box">A</span>
+                  <span class="leaf-box">B</span>
+                  <span class="leaf-box">C</span>
+                  <span class="leaf-box">D</span>
+                </div>
+              </div>
+              <div class="tree-arrow">↓ Append new records</div>
+              <div class="tree-row">
+                <span class="tree-label">Generation 2 (size 6):</span>
+                <div class="leaves-container">
+                  <span class="leaf-box highlight">A</span>
+                  <span class="leaf-box highlight">B</span>
+                  <span class="leaf-box highlight">C</span>
+                  <span class="leaf-box highlight">D</span>
+                  <span class="leaf-box new-leaf">E</span>
+                  <span class="leaf-box new-leaf">F</span>
+                </div>
+              </div>
+            </div>
+            <div class="scenario-desc">
+              <h4>Proof Verifies: [A B C D] → [A B C D E F]</h4>
+              <p>Generation 1 forms the exact unaltered prefix of Generation 2. The RFC 6962 consistency proof verifies cryptographically without needing the full Generation 1 export file.</p>
+            </div>
+          </div>
+
+          <!-- Scenario B: Retention / Eviction Breakdown -->
+          <div class="card scenario-card scenario-invalid">
+            <div class="scenario-header">
+              <span class="scenario-badge badge-red">Server Retention Eviction</span>
+              <span class="status-indicator text-red">NOT A PREFIX ✗</span>
+            </div>
+            <div class="tree-diagram">
+              <div class="tree-row">
+                <span class="tree-label">Generation 1 (size 4):</span>
+                <div class="leaves-container">
+                  <span class="leaf-box evicted">A</span>
+                  <span class="leaf-box">B</span>
+                  <span class="leaf-box">C</span>
+                  <span class="leaf-box">D</span>
+                </div>
+              </div>
+              <div class="tree-arrow text-red">⚠ Record A evicted by server storage policy</div>
+              <div class="tree-row">
+                <span class="tree-label">Generation 2 (size 5):</span>
+                <div class="leaves-container">
+                  <span class="leaf-box">B</span>
+                  <span class="leaf-box">C</span>
+                  <span class="leaf-box">D</span>
+                  <span class="leaf-box new-leaf">E</span>
+                  <span class="leaf-box new-leaf">F</span>
+                </div>
+              </div>
+            </div>
+            <div class="scenario-desc">
+              <h4>Proof FAILS: [A B C D] → [B C D E F]</h4>
+              <p><strong>Eviction can destroy the retained bytes needed to independently verify earlier records. C7 therefore fails when the newer export is no longer an exact prefix of the earlier export.</strong> Failing closed is mathematically correct; TC-Ledger refuses to assert false continuity or invent deleted history.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 6 & 7: What TC-Ledger Proves vs What It Does Not -->
+    <section id="guarantees" class="section">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Specifications</span>
+          <h2 class="section-title">Cryptographic Guarantees &amp; Non-Guarantees</h2>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card guarantee-card">
+            <h3 class="text-green">What TC-Ledger Proves</h3>
+            <ul class="feature-list">
+              <li>
+                <strong>Ed25519 Signature Validity</strong>: Verifies that a record was signed by the private key corresponding to its declared <code>did:key:z6Mk...</code> identifier over canonical <code>room|nonce|text</code>.
+              </li>
+              <li>
+                <strong>Deterministic Evidence Identity</strong>: Normalizes valid payloads via RFC 8785 (JCS) to produce a unique evidence ID (<code>tc-ledger:v1:&lt;sha256&gt;</code>).
+              </li>
+              <li>
+                <strong>Exact Export-Byte Commitment</strong>: Binds physical lines in source order without re-serialization, preserving exact LF/CRLF delimiters and blanks.
+              </li>
+              <li>
+                <strong>Merkle Inclusion</strong>: Generates compact audit paths allowing any single export line to be proven against a known Merkle root. Preserved export lines are tamper-evident relative to a previously recorded root.
+              </li>
+              <li>
+                <strong>Append-Only Consistency</strong>: Cryptographically verifies that an export tree is an exact prefix extension of an earlier committed export tree.
+              </li>
+              <li>
+                <strong>Offline Verification</strong>: Verifies inclusion and consistency proofs independently with zero network calls or full export downloads.
+              </li>
+            </ul>
+          </div>
+
+          <div class="card guarantee-card">
+            <h3 class="text-dim">What TC-Ledger Does NOT Prove</h3>
+            <ul class="feature-list">
+              <li>
+                <strong>Entire Room Lifetime History</strong>: It verifies retained export bytes; it does not attest to messages pruned by room retention policies before export.
+              </li>
+              <li>
+                <strong>Factual Truth of Messages</strong>: It proves that an identity signed a specific statement; it does not prove the factual truth of the message contents.
+              </li>
+              <li>
+                <strong>Real-World Identity Attribution</strong>: It verifies signatures against public keys in <code>did:key</code>; it does not establish real-world identity or solve private key compromise.
+              </li>
+              <li>
+                <strong>Continuous Data Availability</strong>: It commits to and proves inclusion within export files, but does not provide distributed consensus or decentralized storage.
+              </li>
+              <li>
+                <strong>Unanchored Envelope Metadata</strong>: Envelope metadata (room, generations, tree sizes) are self-attested unless verified against caller-provided trust anchors.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 8: Integration Opportunity -->
+    <section id="proposal" class="section bg-alt">
+      <div class="container">
+        <div class="proposal-box">
+          <div class="proposal-badge">Architectural Discussion &amp; Proposal</div>
+          <h2 class="proposal-title">Integration Opportunity: Authenticated Export Heads</h2>
+          <p class="proposal-text">
+            "A natural integration opportunity is an authenticated export head from Technocore containing the committed room/generation/tree size/root/timestamp and a server signature."
+          </p>
+          <div class="proposal-quote">
+            "Would signed export heads be useful for moderation, auditing, or dispute resolution?"
+          </div>
+          <p class="proposal-disclaimer text-dim">
+            <em>TC-Ledger is an independent project and is not affiliated with, endorsed by, or reviewed by Technocore. This concept is presented as an open architectural discussion proposal. It does not represent an implemented feature or an official endorsement.</em>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 9: Technical Credentials -->
+    <section class="section">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Engineering Quality</span>
+          <h2 class="section-title">Technical Credentials</h2>
+        </div>
+
+        <div class="credentials-grid">
+          <div class="cred-card">
+            <div class="cred-icon">📜</div>
+            <h4>Apache-2.0</h4>
+            <p>Permissive open-source license for enterprise and protocol integration.</p>
+          </div>
+          <div class="cred-card">
+            <div class="cred-icon">🏷️</div>
+            <h4>Release v0.3.1</h4>
+            <p>v0.3.1 — SPEC FROZEN with strict Base64URL, delimiter validation, and explicit size semantics.</p>
+          </div>
+          <div class="cred-card">
+            <div class="cred-icon">🐍</div>
+            <h4>196 Python Tests</h4>
+            <p>Comprehensive test suite covering C0–C7 conformance vectors and adversarial mutations.</p>
+          </div>
+          <div class="cred-card">
+            <div class="cred-icon">⚙️</div>
+            <h4>33 Foundry Tests</h4>
+            <p>EVM HTLC settlement contracts verified under Foundry / Forge local test suites.</p>
+          </div>
+          <div class="cred-card">
+            <div class="cred-icon">📦</div>
+            <h4>140 TypeScript Tests</h4>
+            <p>Deal Wallet orchestration, transport layer, and archival verification suites.</p>
+          </div>
+          <div class="cred-card">
+            <div class="cred-icon">🌲</div>
+            <h4>RFC 8785 &amp; RFC 6962</h4>
+            <p>Standard JSON canonicalization scheme and Certificate Transparency Merkle tree byte model.</p>
+          </div>
+          <div class="cred-card">
+            <div class="cred-icon">🔒</div>
+            <h4>Offline Independent Verification</h4>
+            <p>Zero network access, zero trust in third-party services, self-contained verification.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Section 10: Footer -->
+  <footer class="footer">
+    <div class="container footer-container">
+      <div class="footer-left">
+        <span class="brand-name">TC-Ledger</span>
+        <span class="text-dim">· Released under Apache-2.0</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/mrchandu1462-ux/tc-ledger" target="_blank" rel="noopener">GitHub Repository</a>
+        <a href="https://github.com/mrchandu1462-ux/tc-ledger/releases/tag/v0.3.1" target="_blank" rel="noopener">v0.3.1 Release</a>
+        <a href="https://github.com/mrchandu1462-ux/tc-ledger/blob/main/docs/cli-contract-v1.md" target="_blank" rel="noopener">Documentation</a>
+        <a href="https://github.com/mrchandu1462-ux/tc-ledger/blob/main/SECURITY.md" target="_blank" rel="noopener">Security Policy</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
