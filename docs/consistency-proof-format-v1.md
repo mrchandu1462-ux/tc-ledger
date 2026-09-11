@@ -144,11 +144,34 @@ The C7 proof artifact is serialized as canonical JSON:
 
 ---
 
-## 7. Security Boundaries and Assumptions
+## 7. Security Boundaries and Trust Assumptions
 
-1. **Cryptographic Append-Only Guarantee**:
-   A valid consistency proof proves strictly that the leaves of export $m$ appear in the identical position and with the identical byte content in export $n$.
-2. **Room and Generation Binding**:
-   A verifier MUST check that `room` matches the target room and that $G_m \\le G_n$.
-3. **Non-Proof of Total Server History**:
-   Technocore servers may prune history under storage pressure. Consistency proves continuity between two captured exports; it does not prove that either export represents the complete lifetime history of the room.
+1. **Append-Only Consistency Requirement**:
+   A valid consistency proof proves strictly that the leaves of export $m$ appear in the identical position and with the identical byte content in export $n$ (i.e. export $m$ is an exact prefix of export $n$).
+
+2. **Retention and Eviction Failure Mode**:
+   A consistency proof requires the later committed tree to contain the earlier tree as its required prefix. If a Technocore server evicts, prunes, or rolls older records under storage retention policies prior to emitting export $n$, that prefix relationship is broken. If older records have been evicted, consistency verification **will and must FAIL** rather than falsely asserting continuity. TC-Ledger does not recover deleted history, nor does it prove complete lifetime room history.
+
+3. **Artifact Metadata Trust Boundaries (F-1 & F-2)**:
+   The JSON artifact fields (`room`, `old_generation`, `new_generation`, `old_tree_size`, `new_tree_size`) are self-attested envelope metadata. The Merkle root commits to physical export lines, not the metadata envelope.
+   - A claimed `new_tree_size` or `old_tree_size` is **not authenticated** merely because it is present in the artifact.
+   - An independent verifier must supply expected trust anchors (`--expected-room`, `--expected-old-generation`, `--expected-new-generation`, `--expected-old-root`, `--expected-new-root`, `--expected-old-tree-size`, `--expected-new-tree-size`).
+   - The verifier returns `"tree_sizes_authenticated": true` **only** when both tree sizes have been explicitly checked against caller-provided expectations.
+
+4. **Durable Preservation Required**:
+   TC-Ledger verifies mathematical commitments; it does not provide distributed consensus or durable storage. Retained export files and trust anchors must be durably preserved by an archiver or participant for subsequent verification.
+
+---
+
+## 8. Relationship Between C1 (JCS) and C2–C7 (Raw Export Bytes)
+
+TC-Ledger maintains a strict architectural separation between individual record evidence IDs (C1) and export-level Merkle commitments (C2–C7):
+
+* **C1 Semantic Normalization (RFC 8785 JCS)**:
+  Evidence IDs (`tc-ledger:v1:<sha256>`) commit to the *semantic canonical JSON* of individual records. RFC 8785 normalizes whitespace, escapes, and key order so that equivalent JSON payloads produce the identical evidence ID. Furthermore, RFC 8785 strictly preserves data types: an integer nonce `1001` and a string nonce `"1001"` yield distinct evidence IDs.
+* **C2–C7 Physical Wire Commitment (Exact Raw Bytes)**:
+  Merkle roots commit to the *exact physical byte stream* of the exported lines (`SHA-256(0x00 || raw_line_bytes)`).
+* **Why Raw-Byte Commitment Exists**:
+  Raw-byte commitment ensures bit-for-bit auditability of what was transferred across the wire or archived to cold storage. It eliminates any ambiguity from JSON parser float rounding, escape discrepancies, or serializer re-ordering.
+* **Consequence of Serializer / Line-Ending Changes**:
+  Any modification to line delimiters (e.g. converting LF `\n` to CRLF `\r\n`), blank lines, or pretty-printing whitespace changes the physical bytes of the leaf and invalidates the C2–C7 Merkle root and all consistency proofs.

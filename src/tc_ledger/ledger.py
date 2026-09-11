@@ -77,6 +77,11 @@ def public_key_from_did(did: str) -> bytes:
 
 
 def verify_signed_record(record: dict, room: str) -> VerificationResult:
+    if not isinstance(room, str) or not room:
+        raise MalformedRecord("room must be a non-empty string")
+    if "|" in room:
+        raise MalformedRecord("room identifier must not contain delimiter '|'")
+
     required = ("seq", "ts", "from", "text")
 
     for field in required:
@@ -113,7 +118,8 @@ def verify_signed_record(record: dict, room: str) -> VerificationResult:
     else:
         raise MalformedRecord("nonce must be an integer or digit string")
 
-    if not isinstance(record["sig"], str):
+    sig_str = record.get("sig")
+    if not isinstance(sig_str, str):
         raise MalformedRecord("sig must be a string")
 
     try:
@@ -121,15 +127,30 @@ def verify_signed_record(record: dict, room: str) -> VerificationResult:
     except VerificationError:
         raise
 
+    # Strict canonical base64url validation: exactly 86 chars [A-Za-z0-9_-] with optional 0-2 '=' padding
+    if not re.fullmatch(r"[A-Za-z0-9_-]{86}(?:==)?", sig_str):
+        raise MalformedRecord("sig must be valid 86-character base64url")
+
+    sig_stripped = sig_str.rstrip("=")
+    if len(sig_stripped) != 86:
+        raise MalformedRecord("unpadded signature length must be exactly 86 characters")
+
+    sig_padded = sig_stripped + "=="
+    sig_std = sig_padded.replace("-", "+").replace("_", "/")
     try:
-        signature = base64.urlsafe_b64decode(record["sig"] + "==")
+        signature = base64.b64decode(sig_std, validate=True)
     except Exception as exc:
-        raise MalformedRecord("invalid base64url signature") from exc
+        raise MalformedRecord("invalid base64url signature encoding") from exc
 
     if len(signature) != EXPECTED_SIGNATURE_BYTES:
         raise MalformedRecord(
             f"signature must decode to 64 bytes, got {len(signature)}"
         )
+
+    # Canonical encoding check: ensure no non-zero unused padding bits (malleability rejection)
+    reencoded = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+    if reencoded != sig_stripped:
+        raise MalformedRecord("signature base64url encoding is non-canonical")
 
     canonical = f"{room}|{nonce}|{record['text']}".encode("utf-8")
 
@@ -488,6 +509,11 @@ def evidence_commitment(record: dict, room: str) -> str:
     The caller is responsible for verifying the record's Technocore
     signature before treating the resulting commitment as verified evidence.
     """
+    if not isinstance(room, str) or not room:
+        raise MalformedRecord("room must be a non-empty string")
+    if "|" in room:
+        raise MalformedRecord("room identifier must not contain delimiter '|'")
+
     required = ("seq", "ts", "from", "text", "nonce", "sig")
 
     for field in required:
@@ -1223,7 +1249,9 @@ def build_consistency_proof_artifact(
 ) -> dict:
     """Build a C7 consistency proof artifact between two physical export files."""
     if not isinstance(room, str) or not room:
-        raise ValueError("room must be a non-empty string")
+        raise MalformedRecord("room must be a non-empty string")
+    if "|" in room:
+        raise MalformedRecord("room identifier must not contain delimiter '|'")
     if not isinstance(old_generation, int) or old_generation < 0:
         raise ValueError("old_generation must be a non-negative integer")
     if not isinstance(new_generation, int) or new_generation < 0:
@@ -1288,6 +1316,8 @@ def verify_consistency_proof_artifact(
     expected_new_generation: int | None = None,
     expected_old_root: str | None = None,
     expected_new_root: str | None = None,
+    expected_old_tree_size: int | None = None,
+    expected_new_tree_size: int | None = None,
 ) -> dict:
     """Verify a C7 consistency proof artifact and check against optional trust anchors."""
     if not isinstance(artifact, dict):
@@ -1365,6 +1395,18 @@ def verify_consistency_proof_artifact(
             "error": f"new root mismatch: expected {expected_new_root}, got {new_root_hex}",
         }
 
+    if expected_old_tree_size is not None and old_size != expected_old_tree_size:
+        return {
+            "valid": False,
+            "error": f"old_tree_size mismatch: artifact has {old_size}, expected {expected_old_tree_size}",
+        }
+
+    if expected_new_tree_size is not None and new_size != expected_new_tree_size:
+        return {
+            "valid": False,
+            "error": f"new_tree_size mismatch: artifact has {new_size}, expected {expected_new_tree_size}",
+        }
+
     try:
         old_root_bytes = bytes.fromhex(old_root_hex)
         new_root_bytes = bytes.fromhex(new_root_hex)
@@ -1394,6 +1436,7 @@ def verify_consistency_proof_artifact(
     if not crypto_valid:
         return {"valid": False, "error": "cryptographic consistency proof verification failed"}
 
+    sizes_authenticated = (expected_old_tree_size is not None and expected_new_tree_size is not None)
     return {
         "valid": True,
         "error": None,
@@ -1405,6 +1448,8 @@ def verify_consistency_proof_artifact(
         "new_tree_size": new_size,
         "old_root": old_root_hex,
         "new_root": new_root_hex,
+        "verified_tree_extension": True,
+        "tree_sizes_authenticated": sizes_authenticated,
     }
 
 
@@ -1533,6 +1578,8 @@ def main() -> int:
     verify_consistency_parser.add_argument("--expected-new-generation", type=int, help="expected subsequent export generation")
     verify_consistency_parser.add_argument("--expected-old-root", help="expected prior export Merkle root")
     verify_consistency_parser.add_argument("--expected-new-root", help="expected subsequent export Merkle root")
+    verify_consistency_parser.add_argument("--expected-old-tree-size", "--expected-old-size", type=int, help="expected prior export tree size")
+    verify_consistency_parser.add_argument("--expected-new-tree-size", "--expected-new-size", type=int, help="expected subsequent export tree size")
     verify_consistency_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
     args = parser.parse_args()
@@ -1924,6 +1971,8 @@ def main() -> int:
             expected_new_generation=args.expected_new_generation,
             expected_old_root=args.expected_old_root,
             expected_new_root=args.expected_new_root,
+            expected_old_tree_size=getattr(args, "expected_old_tree_size", None),
+            expected_new_tree_size=getattr(args, "expected_new_tree_size", None),
         )
 
         valid = res["valid"]
@@ -1935,7 +1984,7 @@ def main() -> int:
             }
             if res.get("error"):
                 out_obj["error"] = res["error"]
-            for k in ["room", "old_generation", "new_generation", "old_tree_size", "new_tree_size", "old_root", "new_root"]:
+            for k in ["room", "old_generation", "new_generation", "old_tree_size", "new_tree_size", "old_root", "new_root", "verified_tree_extension", "tree_sizes_authenticated"]:
                 if k in res:
                     out_obj[k] = res[k]
             print(json.dumps(out_obj, indent=2, sort_keys=True))
