@@ -243,12 +243,13 @@ describe("Phase 4B: DealWalletApp Orchestrator", () => {
     await bobApp.start();
 
     // Alice creates offer with short refund deadline
+    await anvil.mineBlock();
     const currentBlockTimestamp = await anvil.getBlockTimestamp();
     simulatedTimeMs = Number(currentBlockTimestamp) * 1000;
     const nowMs = simulatedTimeMs;
     const claimByMs = nowMs + 10000;
     const refundAfterMs = nowMs + 20000;
-    const expiresMs = nowMs + 5000;
+    const expiresMs = nowMs + 60000;
 
     const { offerId } = await aliceApp.createOffer({
       role: "payer",
