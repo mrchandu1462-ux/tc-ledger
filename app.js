@@ -223,6 +223,33 @@ if (typeof document !== "undefined") {
 
     // Initial calculation
     runVerification();
+
+    // Homepage quick DID entry point
+    const homeForm = document.getElementById("home-did-form");
+    const homeInput = document.getElementById("home-did-input");
+    if (homeForm && homeInput) {
+      homeForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const did = homeInput.value.trim();
+        if (did) {
+          window.location.href = "explorer.html?mode=live&did=" + encodeURIComponent(did);
+        }
+      });
+    }
+
+    if (document.querySelectorAll) {
+      const quickPills = document.querySelectorAll(".quick-pill-btn");
+      quickPills.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const did = btn.getAttribute("data-did");
+          const mode = btn.getAttribute("data-mode") || "live";
+          if (did && homeInput) {
+            homeInput.value = did;
+            window.location.href = "explorer.html?mode=" + encodeURIComponent(mode) + "&did=" + encodeURIComponent(did);
+          }
+        });
+      });
+    }
   });
 }
 

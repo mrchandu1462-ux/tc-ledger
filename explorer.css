@@ -516,3 +516,184 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Responsive & Accessibility Enhancements */
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent-cyan, #38bdf8);
+  outline-offset: 2px;
+}
+
+@media (max-width: 768px) {
+  .demo-live-banner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .demo-live-banner .mode-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .search-input-group {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .search-input-group .btn-primary {
+    width: 100%;
+    height: 46px;
+  }
+
+  .did-meta-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+  }
+
+  .exp-tabs-nav {
+    overflow-x: auto;
+    white-space: nowrap;
+    padding-bottom: 0.25rem;
+  }
+
+  .modal-content {
+    width: 95%;
+    max-height: 90vh;
+    padding: 1.25rem;
+    margin: 1rem auto;
+  }
+
+  .chat-msg-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .did-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .room-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* === RESPONSIVE & ACCESSIBILITY ENHANCEMENTS (V2 QA) === */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (max-width: 768px) {
+  html, body {
+    overflow-x: hidden;
+  }
+
+
+  .demo-synthetic-banner {
+    font-size: 0.7rem;
+    padding: 0.5rem 0.75rem;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+
+  .main-nav .nav-item:not(.nav-explorer-btn):not(.nav-external) {
+    display: none;
+  }
+
+  .header-container {
+    padding: 0.75rem 1rem;
+  }
+
+  .exp-tabs-nav {
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 0.25rem;
+    scrollbar-width: thin;
+  }
+
+  .exp-tab-btn {
+    flex-shrink: 0;
+    font-size: 0.82rem;
+    padding: 0.6rem 0.85rem;
+  }
+
+  .mode-selector-wrap {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  #mode-source-badge {
+    margin-left: 0 !important;
+    width: 100%;
+    text-align: center;
+  }
+
+  .search-input-group {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .search-input-group input {
+    width: 100% !important;
+  }
+
+  .search-input-group #btn-explore {
+    width: 100% !important;
+    justify-content: center;
+  }
+
+  .quick-pills {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .quick-pill-btn {
+    font-size: 0.78rem;
+  }
+
+  .status-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .metrics-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+  }
+
+  .record-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .proof-audit-path {
+    font-size: 0.72rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .version-tag {
+    display: none;
+  }
+
+  .main-nav .nav-external {
+    display: none;
+  }
+
+  .metrics-row {
+    grid-template-columns: 1fr;
+  }
+
+  .explorer-search-box {
+    padding: 1.25rem 1rem;
+  }
+}

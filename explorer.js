@@ -448,7 +448,9 @@ function adaptIndexerJsonToExplorer(data) {
         name: rName,
         displayName: `#${rName}`,
         description: `Live retained records for ${data.did} in #${rName}.`,
-        committedRoot: `X-Room-Gen: ${act.generation}`,
+        generation: (act.generation !== null && act.generation !== undefined) ? act.generation : "N/A",
+        committedRoot: `X-Room-Gen: ${(act.generation !== null && act.generation !== undefined) ? act.generation : "N/A"}`,
+        records: recs,
         messages: recs
       };
     });
@@ -587,7 +589,9 @@ async function lookupLiveDid(did) {
       name: rName,
       displayName: `#${rName}`,
       description: `Live retained records for ${cleanDid} in #${rName} (Generation ${act.generation}).`,
-      committedRoot: `X-Room-Gen: ${act.generation}`,
+      generation: act.generation !== null ? act.generation : "N/A",
+      committedRoot: `X-Room-Gen: ${act.generation !== null ? act.generation : "N/A"}`,
+      records: act.verifiedRecords,
       messages: act.verifiedRecords
     };
     return {
@@ -791,6 +795,26 @@ function setupUI() {
     });
   }
 
+  // URL query parameter support: ?did=...&mode=...
+  if (typeof window !== "undefined" && window.location && window.location.search) {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const paramDid = urlParams.get("did");
+      const paramMode = urlParams.get("mode");
+      if (paramMode === "live" || (!paramMode && paramDid && paramDid.startsWith("did:key:z6Mkei"))) {
+        setExplorerMode("live");
+      } else if (paramMode === "synthetic") {
+        setExplorerMode("synthetic");
+      }
+      if (paramDid && didInput) {
+        didInput.value = paramDid;
+        runExplore();
+      }
+    } catch (e) {
+      // Ignore error in non-browser runtimes
+    }
+  }
+
   // Navigation tab switching (Search / Consistency / Self-Verify)
   const tabs = document.querySelectorAll(".exp-tab-btn");
   tabs.forEach(tab => {
@@ -964,25 +988,47 @@ function renderRoomCards(rooms) {
 
 function openRoom(roomId) {
   currentRoomId = roomId;
-  const roomData = (currentExplorerMode === "live" ? LIVE_ROOMS_DATA[roomId] : SYNTHETIC_ROOMS_DATA[roomId]) || SYNTHETIC_ROOMS_DATA[roomId] || LIVE_ROOMS_DATA[roomId];
-  if (!roomData) return;
+  const roomData = currentExplorerMode === "live"
+    ? LIVE_ROOMS_DATA[roomId]
+    : SYNTHETIC_ROOMS_DATA[roomId];
 
   const roomView = document.getElementById("room-view-container");
   if (!roomView) return;
+
+  if (!roomData) {
+    roomView.classList.remove("hidden");
+    roomView.scrollIntoView({ behavior: "smooth" });
+    const isLive = currentExplorerMode === "live";
+    document.getElementById("chat-room-title").textContent = isLive ? "Live Room Data Unavailable" : "Room Data Unavailable";
+    document.getElementById("chat-room-desc").textContent = isLive
+      ? "No live retained records or activity data are available for this room."
+      : "The requested synthetic room data could not be found.";
+    document.getElementById("chat-room-gen").textContent = "N/A";
+    document.getElementById("chat-room-count").textContent = "0";
+    document.getElementById("chat-room-root").textContent = "N/A";
+    document.getElementById("chat-room-root").title = "N/A";
+    const list = document.getElementById("chat-messages-list");
+    list.innerHTML = `<div class="chat-empty-notice text-secondary" style="padding: 1rem; text-align: center;">${isLive ? "Live room data is unavailable for this selection. No synthetic data was substituted." : "No records available."}</div>`;
+    return;
+  }
+
   roomView.classList.remove("hidden");
   roomView.scrollIntoView({ behavior: "smooth" });
 
+  const records = roomData.records || roomData.messages || [];
+  const rootStr = roomData.committedRoot || "N/A";
+
   document.getElementById("chat-room-title").textContent = `#${roomData.name} Activity`;
-  document.getElementById("chat-room-desc").textContent = roomData.description;
-  document.getElementById("chat-room-gen").textContent = roomData.generation;
-  document.getElementById("chat-room-count").textContent = roomData.records.length;
-  document.getElementById("chat-room-root").textContent = roomData.committedRoot.substring(0, 16) + "...";
-  document.getElementById("chat-room-root").title = roomData.committedRoot;
+  document.getElementById("chat-room-desc").textContent = roomData.description || "";
+  document.getElementById("chat-room-gen").textContent = (roomData.generation !== undefined && roomData.generation !== null) ? roomData.generation : "N/A";
+  document.getElementById("chat-room-count").textContent = records.length;
+  document.getElementById("chat-room-root").textContent = rootStr.length > 16 ? rootStr.substring(0, 16) + "..." : rootStr;
+  document.getElementById("chat-room-root").title = rootStr;
 
   const list = document.getElementById("chat-messages-list");
   list.innerHTML = "";
 
-  roomData.records.forEach(rec => {
+  records.forEach(rec => {
     const isTarget = rec.from === currentDidData.did;
     const msgEl = document.createElement("div");
     msgEl.className = `chat-item ${isTarget ? "chat-target" : ""}`;
@@ -1037,7 +1083,10 @@ async function openRecordDetail(record, roomId) {
   } else {
     incEl.textContent = "Retained in export; inclusion proof not requested for this leaf index";
     incEl.className = "text-dim";
-    rootEl.textContent = SYNTHETIC_ROOMS_DATA[roomId]?.committedRoot || "N/A";
+    const activeRoomsData = currentExplorerMode === "live"
+      ? LIVE_ROOMS_DATA
+      : SYNTHETIC_ROOMS_DATA;
+    rootEl.textContent = activeRoomsData[roomId]?.committedRoot || "N/A";
   }
 
   // Setup proof download / view buttons
