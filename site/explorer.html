@@ -11,8 +11,8 @@
 </head>
 <body>
 
-  <!-- Top Synthetic Demo Notice -->
-  <div class="demo-synthetic-banner">
+  <!-- Top Mode Notice Banner -->
+  <div id="top-mode-banner" class="demo-synthetic-banner">
     DEMO DATA — SYNTHETIC &bull; All identities, rooms, and records in this explorer are synthetic evaluation fixtures. Not production Technocore history.
   </div>
 
@@ -59,18 +59,59 @@
           </p>
         </div>
 
+        <!-- Mode Selector Group -->
+        <div class="mode-selector-wrap" style="display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center; flex-wrap: wrap;">
+          <span class="text-dim" style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Data Source:</span>
+          <button type="button" id="btn-mode-synthetic" class="btn-mode active">Synthetic Demo</button>
+          <button type="button" id="btn-mode-live" class="btn-mode">Live Technocore</button>
+          <span id="mode-source-badge" class="badge-tag" style="margin-left: auto; font-size: 0.78rem;">MODE: DEMO FIXTURES</span>
+        </div>
+
         <div class="search-input-group">
           <input type="text" id="explorer-did-input" placeholder="did:key:z6Mk..." spellcheck="false" autocomplete="off">
           <button id="btn-explore" class="btn btn-primary" type="button">Explore</button>
         </div>
 
-        <div class="quick-pills">
+        <!-- Quick Pills: Synthetic Mode -->
+        <div id="pills-synthetic" class="quick-pills">
           <span class="text-dim">Quick Select (Demo Fixtures):</span>
           <button id="pill-demo-active" class="quick-pill-btn" type="button">🟢 Active: Bob (did:key:z6Mko9...)</button>
           <button id="pill-demo-stale" class="quick-pill-btn" type="button">⚪ Stale: Alice (did:key:z6Mkon...)</button>
           <button id="pill-demo-unknown" class="quick-pill-btn" type="button">✕ Unknown DID</button>
         </div>
+
+        <!-- Quick Pills: Live Mode -->
+        <div id="pills-live" class="quick-pills hidden">
+          <span class="text-dim">Quick Select (Live Technocore):</span>
+          <button id="pill-live-active" class="quick-pill-btn" type="button">🟢 Live Active (did:key:z6Mkei...)</button>
+          <button id="pill-live-nonexistent" class="quick-pill-btn" type="button">⚪ Nonexistent DID</button>
+          <button id="pill-load-json" class="quick-pill-btn" type="button">📂 Load Indexer JSON</button>
+          <input type="file" id="file-indexer-json" accept=".json" style="display: none;">
+        </div>
       </section>
+
+      <!-- LOADING CONTAINER -->
+      <div id="loading-container" class="card status-card hidden" style="text-align: center; padding: 2.5rem 1.5rem;">
+        <div class="spinner" style="margin: 0 auto 1.25rem auto;"></div>
+        <div id="loading-title" style="font-weight: 600; font-size: 1.15rem; margin-bottom: 0.5rem; font-family: var(--font-mono);">Indexing Live Technocore Activity...</div>
+        <p id="loading-subtitle" class="text-dim" style="font-size: 0.88rem; margin: 0; max-width: 500px; margin: 0 auto;">
+          Querying public read endpoints and verifying Ed25519 signatures locally.
+        </p>
+      </div>
+
+      <!-- LIVE ERROR CONTAINER -->
+      <div id="live-error-container" class="card status-card status-nodata hidden">
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
+          <span class="status-pill status-invalid">LIVE LOOKUP FAILED</span>
+          <span class="text-dim font-mono" id="live-error-endpoint">Technocore Public API</span>
+        </div>
+        <p id="live-error-message" style="margin: 0; font-size: 0.95rem; color: var(--text-primary);">
+          Could not resolve live Technocore public data.
+        </p>
+        <p class="text-dim" style="font-size: 0.85rem; margin-top: 0.5rem; margin-bottom: 0;">
+          Start the local adapter with <code>python tools/tc_indexer_server.py</code> or load an offline JSON artifact via <strong>Load Indexer JSON</strong>.
+        </p>
+      </div>
 
       <!-- NO DATA FOUND CONTAINER -->
       <div id="no-data-container" class="card status-card status-nodata hidden">
@@ -124,6 +165,10 @@
             <div class="metric-box-lbl">Latest Committed Root</div>
             <div id="meta-root" class="metric-box-val" style="font-size: 0.9rem;">—</div>
           </div>
+        </div>
+        <!-- Retention Notice Banner -->
+        <div id="retention-notice-banner" class="retention-banner hidden">
+          <strong>CURRENTLY RETAINED PUBLIC ACTIVITY:</strong> This result reflects records currently retained in inspected public room exports. It does not claim complete lifetime history.
         </div>
       </section>
 
