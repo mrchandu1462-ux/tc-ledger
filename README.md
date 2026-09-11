@@ -1,6 +1,6 @@
 # tc-ledger
 
-**A reproducible, self-contained evidence verification layer for Technocore room exports.**
+**A reproducible, self-contained evidence verification layer and explorer for Technocore room exports.**
 
 [![CI](https://github.com/mrchandu1462-ux/tc-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/mrchandu1462-ux/tc-ledger/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -8,7 +8,16 @@
 
 Technocore servers retain and emit raw JSONL exports of room conversations containing Ed25519-signed messages from decentralized identifiers (`did:key:z...`). However, consumers and counterparties need a way to verify the authenticity of signed records, commit to exact export contents, prove that individual records are included in an export, and verify those proofs offline without network access or downloading full exports.
 
-tc-ledger bridges this gap by turning signed JSONL exports into deterministic cryptographic commitments, Merkle completeness trees, and self-contained inclusion and consistency proofs.
+tc-ledger bridges this gap by turning signed JSONL exports into deterministic cryptographic commitments, Merkle completeness trees, self-contained inclusion and consistency proofs, and providing a public Explorer for discovery and client-side cryptographic inspection.
+
+---
+
+## Project Independence & Disclaimer
+
+> [!NOTE]
+> **Independent Project**: TC-Ledger is an independent, open-source project and is **not affiliated with, endorsed by, or sponsored by Technocore or Flop Labs**.
+>
+> All live network interactions are strictly **read-only** against publicly accessible HTTP endpoints. TC-Ledger does not post messages, issue write requests, generate server rooms, publish DIDs, or require API credentials.
 
 ---
 
@@ -17,67 +26,117 @@ tc-ledger bridges this gap by turning signed JSONL exports into deterministic cr
 > [!IMPORTANT]
 > **What TC-Ledger Proves vs. Server Retention:**
 > 1. **Exact Retained Export Bytes**: TC-Ledger proves the exact physical bytes of exports supplied to it. It does **not** prove complete lifetime room history, nor does it recover deleted or evicted history.
-> 2. **Append-Only Consistency Proofs (C7)**: A consistency proof proves that a later committed export tree contains the earlier tree as its **exact, unaltered prefix**.
+> 2. **Append-Only Consistency Proofs (C7)**: A consistency proof proves that a later committed export tree contains the earlier tree as its **exact, unaltered prefix**. C7 guarantees append-only progression of retained logs.
 > 3. **Retention and Eviction Failure**: If a Technocore server evicts or prunes older messages under retention limits before generating a later export, the prefix relationship is broken. In this case, consistency verification **will and must FAIL** rather than falsely asserting continuity.
-> 4. **Durable Preservation Required**: TC-Ledger verifies mathematical commitments; it does not store history. Retained export files and trust anchors must be durably preserved by an archiver or participant for subsequent verification.
-> 5. **Metadata Envelope Trust Boundaries**: Artifact metadata fields (`room`, `old_generation`, `new_generation`, `old_tree_size`, `new_tree_size`) are self-attested envelope properties. Cryptographic authentication requires validating them against caller-specified trust anchors (`--expected-*`).
+> 4. **No "Tamper-Proof" Claims**: Mathematical commitments detect tampering; they do not physically prevent modification or deletion of untrusted server storage.
+> 5. **No Trusted Timestamping**: Timestamps inside record payloads (`ts`) are self-reported by authors or servers. TC-Ledger verifies signature integrity over the payload string, but makes no claim of trusted third-party timestamping or monotonic time enforcement.
+> 6. **No Server Provenance Claims**: Technocore exports currently lack server-side signatures. TC-Ledger proves author Ed25519 signatures and exact byte commitments, but does not attest to server origin.
+> 7. **Live Verification Depends on Trusted Inputs**: Live discovery and indexer results reflect only the specific public rooms and export streams inspected at query time.
+> 8. **Durable Preservation Required**: TC-Ledger verifies mathematical commitments; it does not store history. Retained export files and trust anchors must be durably preserved by an archiver or participant for subsequent verification.
+> 9. **Metadata Envelope Trust Boundaries**: Artifact metadata fields (`room`, `old_generation`, `new_generation`, `old_tree_size`, `new_tree_size`) are self-attested envelope properties. Cryptographic authentication requires validating them against caller-specified trust anchors (`--expected-*`).
 
 ---
 
-## The Evidence Pipeline
+## TC-Ledger Explorer & Live Discovery
+
+The **TC-Ledger Explorer** provides an interactive interface for discovering retained public activity for decentralized identifiers (`did:key:z...`), inspecting retained messages, and performing client-side Ed25519 verification.
+
+* **Live Deployed Explorer**: [https://mrchandu1462-ux.github.io/tc-ledger/explorer.html](https://mrchandu1462-ux.github.io/tc-ledger/explorer.html)
+* **Showcase Site**: [https://mrchandu1462-ux.github.io/tc-ledger/](https://mrchandu1462-ux.github.io/tc-ledger/)
+
+### Operating Modes
+
+1. **Live Technocore Mode**: Queries live, publicly readable Technocore room export streams (such as `#tclk-offers` and `#lobby`) directly in the browser via CORS or through a local read-only indexer adapter. Every record signature is cryptographically verified on the client using WebCrypto / Ed25519.
+2. **Synthetic Demo Mode**: Provides an offline, isolated sandbox demonstrating active (`Bob`), stale (`Alice`), and nonexistent identity states using fixed synthetic fixtures without making network calls.
+
+### Activity Status Semantics
+
+The Explorer uses strict, honest activity indicators:
+* **ACTIVE**: Recent cryptographically verified activity was observed within the analysis window (e.g. past 24 hours). **This indicates verified activity only; it does NOT imply online presence, active sockets, or heartbeat availability.**
+* **STALE**: Verified activity was observed historically for this DID, but falls outside the recent activity window. **This indicates elapsed time since last verified message; it does NOT mean the agent is offline.**
+* **NO DATA FOUND**: No verified activity for the DID was observed in currently inspected public retained streams. **This indicates absence of data in the inspected dataset; it does NOT mean the DID does not exist.**
+
+**Zero Silent Fallback**: Live query failures, unreachable rooms, or unobserved DIDs never silently fall back to synthetic demo data.
+
+---
+
+## Architecture Overview
 
 ```text
-       Signed Technocore Activity
-        (Author signs: room|nonce|text)
-                      |
-                      v
-             Record Verification
-        (Ed25519, did:key multicodec 0xed01)
-                      |
-                      v
-        Deterministic Evidence Commitment
-        (RFC 8785 JCS canonicalization, SHA-256)
-                      |
-                      v
-           Exact Export-Byte Commitment
-     (Preserves raw line bytes, LF/CRLF, blanks)
-                      |
-                      v
-               Export Merkle Root
-       (RFC 6962 domain separation: 0x00 / 0x01)
-                      |
-                      v
-          Export Inclusion Proof v1
-        (Audit path, left/right positions, epoch)
-                      |
-                      v
-       Cross-Generation Consistency Proof
-          (RFC 6962 append-only continuity)
-                      |
-                      v
-             Independent Verifier
-        (Self-contained, offline verification)
+               +--------------------------------------------------+
+               |            Public Technocore Endpoints           |
+               |  GET /r/<room>/export | GET /r/<room>?format=json|
+               +--------------------------------------------------+
+                                        | (Read-Only HTTP / CORS)
+                                        v
+     +-----------------------------------------------------------------------+
+     |                       Discovery & Presentation                        |
+     |                                                                       |
+     |   +--------------------------+      +-----------------------------+   |
+     |   |   Live Indexer CLI       |      |    TC-Ledger Explorer       |   |
+     |   | (tools/tc_live_indexer)  |      |   (site/explorer.html/.js)  |   |
+     |   +--------------------------+      +-----------------------------+   |
+     |                 |                                  |                  |
+     |                 +--------------+    +--------------+                  |
+     |                                |    |                                 |
+     |                                v    v                                 |
+     |              Client-Side Ed25519 Signature Verification               |
+     |              (RFC 8785 JCS payload: room|nonce|text)                  |
+     +-----------------------------------------------------------------------+
+                                        |
+                                        v
+     +-----------------------------------------------------------------------+
+     |                   Frozen Cryptographic Core (v0.3.1)                  |
+     |                                                                       |
+     |       Record Verification (Ed25519, did:key multicodec 0xed01)        |
+     |                                  |                                    |
+     |            RFC 8785 JCS Deterministic Evidence Commitment             |
+     |                                  |                                    |
+     |               Byte-Exact Physical Export Line Hashing                 |
+     |                                  |                                    |
+     |             RFC 6962 Merkle Tree Roots (0x00 / 0x01)                  |
+     |                                  |                                    |
+     |          Export Inclusion Proofs (v1) & Leaf Audit Paths              |
+     |                                  |                                    |
+     |         Cross-Generation Append-Only Consistency Proofs (C7)          |
+     |                                  |                                    |
+     |        Self-Contained Offline Verifier & Smart Contract Anchors       |
+     +-----------------------------------------------------------------------+
 ```
 
 ---
 
-## Guarantees & Non-Guarantees
+## Read-Only Live Indexer CLI & Local Adapter
 
-### What TC-Ledger Guarantees
+TC-Ledger provides read-only command-line tools for discovering and indexing public Technocore activity.
 
-* **Signature Validity**: Cryptographically verifies that a record was signed by the Ed25519 private key corresponding to its declared `did:key:z6Mk...` identifier over the exact canonical payload `room|nonce|text`.
-* **Exact Record Identity**: Normalizes valid evidence payloads via RFC 8785 JCS to yield a deterministic evidence identifier (`tc-ledger:v1:<sha256-hex>`).
-* **Export Completeness & Ordering**: Binds physical export lines in source order without re-serialization, preserving byte-exact line terminators (LF, CRLF) and blank lines.
-* **Merkle Inclusion Proofs**: Generates compact audit paths allowing any individual export line to be proven against a known Merkle root.
-* **Cross-Generation Consistency Proofs**: Cryptographically proves that an export tree is an append-only extension of an earlier committed export tree.
-* **Self-Contained Offline Verification**: Allows an independent third party to verify inclusion and consistency proofs using only local artifact files and expected trust anchors with zero network access.
+### Running the Live Indexer CLI
 
-### What TC-Ledger Does Not Guarantee
+```bash
+# Discover activity for a DID across seed rooms
+uv run python tools/tc_live_indexer.py --did did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z
 
-* **Application Truthfulness**: It proves that an identity signed a specific message; it does not prove the factual truth of the message contents.
-* **Complete Lifetime History**: It verifies retained export bytes; it does not attest to messages pruned by room storage policies before export.
-* **Key Ownership / Identity Attribution**: It verifies signatures against public keys encoded in `did:key`; it does not establish real-world identity or solve private key compromise.
-* **Permanent Data Availability**: It commits to and proves inclusion within export files, but does not provide distributed consensus or decentralized storage. Users and operators must maintain durable backups of export artifacts.
+# Discover activity across specific rooms with a custom activity window
+uv run python tools/tc_live_indexer.py \
+  --did did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z \
+  --rooms tclk-offers,lobby \
+  --window-hours 48.0
+
+# Output machine-readable JSON report or save artifact
+uv run python tools/tc_live_indexer.py \
+  --did did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z \
+  --json \
+  --output live_index.json
+```
+
+### Running the Local Indexer Server
+
+The optional local adapter server runs on `http://127.0.0.1:8088` and provides a read-only CORS proxy for full room enumeration:
+
+```bash
+# Start local read-only adapter
+uv run python tools/tc_indexer_server.py --port 8088
+```
 
 ---
 
@@ -180,21 +239,21 @@ uv run tc-ledger verify-consistency examples/consistency_proof.json \
 All test suites and vectors pass against the codebase:
 
 ```bash
-# 1. Python unit, integration, and conformance tests (196 passed)
-uv run pytest
+# 1. Python unit, integration, and conformance tests (205 passed)
+uv run pytest tests/
 
-# 2. Frozen vector CLI validation (C3 vectors: OK)
+# 2. Live Technocore indexer test suite (9 passed)
+uv run pytest tools/test_tc_live_indexer.py
+
+# 3. Frozen vector CLI validation (C3 vectors: OK)
 uv run tc-ledger vectors
 uv run tc-ledger vectors --json
 
-# 3. EVM Smart Contract Foundry test suite (33 passed)
+# 4. EVM Smart Contract Foundry test suite (33 passed)
 cd tclk-rail-evm && forge test
 
-# 4. TypeScript rail integration test suite (140 passed across 8 suites)
+# 5. TypeScript rail integration test suite (140 passed across 8 suites)
 cd tclk-rail-evm && npm test
-
-# 5. TypeScript build check
-cd tclk-rail-evm && npm run build
 ```
 
 ---

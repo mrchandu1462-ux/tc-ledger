@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-11
+
+### Added
+- Read-only live Technocore activity discovery.
+- DID activity lookup with ACTIVE, STALE, and NO DATA semantics.
+- Live Explorer mode with retained-room activity and record inspection.
+- JSON indexer output and local read-only indexer adapter.
+- Live integration and browser journey tests.
+- Live integration boundary documentation.
+
+### Security
+- Preserved frozen v0.3.1 cryptographic verification behavior.
+- Added explicit live-data trust, retention, and failure-boundary documentation.
+- Live failures never silently fall back to synthetic data.
+
 ## [0.3.1] - 2026-09-11
 
 ### Security Hardening & Audit Remediation
