@@ -1,4 +1,4 @@
-// TC-Ledger Explorer Data Adapter & Cryptographic Engine
+// TC Verify Explorer Data Adapter & Cryptographic Engine (Powered by TC-Ledger)
 // Zero-dependency, offline, deterministic WebCrypto verification.
 // Clearly labelled: DEMO DATA — SYNTHETIC
 
