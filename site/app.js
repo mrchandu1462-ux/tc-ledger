@@ -1,4 +1,4 @@
-// TC-Ledger Showcase Interactive Verification Sandbox
+// TC Verify - Interactive Verification Sandbox (Powered by TC-Ledger)
 // Deterministic, offline, dependency-free WebCrypto implementation.
 
 const AUTHENTIC_RECORD_STRING = '{"seq":2,"ts":"2026-09-01T12:02:00.000000Z","from":"did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH","text":"Bob verified session terms","nonce":1002,"sig":"juuohrJ_zJ5oh5hscm5mXK8MykhGVWmKCMMU5cXJC0QrCx3UhanSjuCYOVwghQenfaDwmEWYllHh0cJM9KP7Cw"}\n';
