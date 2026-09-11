@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import uuid
 import re
 from pathlib import Path
 import sys
@@ -1076,6 +1077,337 @@ def write_inclusion_proof_artifact(
         )
         handle.write("\n")
 
+
+
+# ---------------------------------------------------------------------------
+# C7 Merkle Consistency Proofs (RFC 6962 §2.1.2)
+# ---------------------------------------------------------------------------
+
+
+def _subproof(m: int, raw_lines: list[bytes], b: bool) -> list[bytes]:
+    """Internal recursive subproof generator according to RFC 6962 §2.1.2."""
+    n = len(raw_lines)
+    if m == n:
+        if b:
+            return []
+        else:
+            return [export_merkle_root(raw_lines)]
+
+    k = 1 << ((n - 1).bit_length() - 1)
+    if m <= k:
+        return _subproof(m, raw_lines[:k], b) + [export_merkle_root(raw_lines[k:])]
+    else:
+        return _subproof(m - k, raw_lines[k:], False) + [export_merkle_root(raw_lines[:k])]
+
+
+def consistency_proof(m: int, raw_lines: list[bytes]) -> list[bytes]:
+    """Generate an RFC 6962 Merkle consistency proof for prefix size m in raw_lines."""
+    if not isinstance(m, int) or isinstance(m, bool):
+        raise TypeError("m must be an integer")
+    if not isinstance(raw_lines, list):
+        raise TypeError("raw_lines must be a list")
+    for raw_line in raw_lines:
+        if not isinstance(raw_line, bytes):
+            raise TypeError("each raw line must be bytes")
+
+    n = len(raw_lines)
+    if m < 0 or m > n:
+        raise ValueError(f"m must satisfy 0 <= m <= {n}, got {m}")
+    if m == 0 or m == n:
+        return []
+
+    k = 1 << ((n - 1).bit_length() - 1)
+    if m <= k:
+        return _subproof(m, raw_lines[:k], True) + [export_merkle_root(raw_lines[k:])]
+    else:
+        return _subproof(m - k, raw_lines[k:], False) + [export_merkle_root(raw_lines[:k])]
+
+
+def verify_consistency_proof(
+    old_size: int,
+    new_size: int,
+    old_root: bytes | str,
+    new_root: bytes | str,
+    proof: list[bytes | str],
+) -> bool:
+    """Verify an RFC 6962 Merkle consistency proof between old_size and new_size."""
+    if not isinstance(old_size, int) or isinstance(old_size, bool):
+        raise TypeError("old_size must be an integer")
+    if not isinstance(new_size, int) or isinstance(new_size, bool):
+        raise TypeError("new_size must be an integer")
+
+    if isinstance(old_root, str):
+        try:
+            old_root = bytes.fromhex(old_root)
+        except ValueError as exc:
+            raise ValueError("old_root is not valid hex") from exc
+    if not isinstance(old_root, (bytes, bytearray)) or len(old_root) != 32:
+        raise ValueError("old_root must be a 32-byte hash")
+
+    if isinstance(new_root, str):
+        try:
+            new_root = bytes.fromhex(new_root)
+        except ValueError as exc:
+            raise ValueError("new_root is not valid hex") from exc
+    if not isinstance(new_root, (bytes, bytearray)) or len(new_root) != 32:
+        raise ValueError("new_root must be a 32-byte hash")
+
+    if not isinstance(proof, list):
+        raise TypeError("proof must be a list of 32-byte hashes")
+
+    converted_proof: list[bytes] = []
+    for node in proof:
+        if isinstance(node, str):
+            try:
+                node = bytes.fromhex(node)
+            except ValueError as exc:
+                raise ValueError("proof node is not valid hex") from exc
+        if not isinstance(node, (bytes, bytearray)) or len(node) != 32:
+            raise ValueError("each proof node must be a 32-byte hash")
+        converted_proof.append(bytes(node))
+    proof = converted_proof
+
+    m = old_size
+    n = new_size
+
+    if m < 0 or n < 0 or m > n:
+        return False
+    if m == n:
+        return len(proof) == 0 and old_root == new_root
+    if m == 0:
+        return len(proof) == 0 and old_root == hashlib.sha256(b"").digest()
+    if not proof:
+        return False
+
+    is_power_of_two = (m & (m - 1)) == 0
+    proof_idx = 0
+
+    if is_power_of_two:
+        fn = old_root
+        sn = old_root
+    else:
+        fn = proof[proof_idx]
+        sn = proof[proof_idx]
+        proof_idx += 1
+
+    fn_index = m - 1
+    sn_index = n - 1
+
+    while fn_index % 2 == 1:
+        fn_index //= 2
+        sn_index //= 2
+
+    for node in proof[proof_idx:]:
+        if sn_index == 0:
+            return False
+        if fn_index % 2 == 1 or fn_index == sn_index:
+            fn = node_hash(node, fn)
+            sn = node_hash(node, sn)
+            while fn_index % 2 == 0 and fn_index != 0:
+                fn_index //= 2
+                sn_index //= 2
+        else:
+            sn = node_hash(sn, node)
+        fn_index //= 2
+        sn_index //= 2
+
+    return fn == old_root and sn == new_root and sn_index == 0
+
+
+def build_consistency_proof_artifact(
+    old_export_path: str,
+    new_export_path: str,
+    room: str,
+    old_generation: int,
+    new_generation: int,
+) -> dict:
+    """Build a C7 consistency proof artifact between two physical export files."""
+    if not isinstance(room, str) or not room:
+        raise ValueError("room must be a non-empty string")
+    if not isinstance(old_generation, int) or old_generation < 0:
+        raise ValueError("old_generation must be a non-negative integer")
+    if not isinstance(new_generation, int) or new_generation < 0:
+        raise ValueError("new_generation must be a non-negative integer")
+    if old_generation > new_generation:
+        raise ValueError(
+            f"old_generation ({old_generation}) cannot exceed new_generation ({new_generation})"
+        )
+
+    with open(old_export_path, "rb") as f:
+        old_lines = f.readlines()
+    with open(new_export_path, "rb") as f:
+        new_lines = f.readlines()
+
+    m = len(old_lines)
+    n = len(new_lines)
+
+    if m > n:
+        raise ValueError(f"old export line count ({m}) cannot exceed new export line count ({n})")
+
+    # Strict prefix check on exact raw bytes
+    if new_lines[:m] != old_lines:
+        raise ValueError("old export is not an exact prefix of new export")
+
+    old_root = export_merkle_root(old_lines)
+    new_root = export_merkle_root(new_lines)
+    proof_nodes = consistency_proof(m, new_lines)
+
+    return {
+        "version": 1,
+        "schema": "tc-ledger/consistency-proof/v1",
+        "profile": "tc-ledger/1",
+        "room": room,
+        "old_generation": old_generation,
+        "new_generation": new_generation,
+        "old_tree_size": m,
+        "new_tree_size": n,
+        "old_root": old_root.hex(),
+        "new_root": new_root.hex(),
+        "proof": [node.hex() for node in proof_nodes],
+    }
+
+
+def write_consistency_proof_artifact(path: str, artifact: dict) -> None:
+    """Write a C7 consistency proof artifact atomically to disk."""
+    if not isinstance(artifact, dict):
+        raise TypeError("artifact must be a dict")
+
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_name(f".{out_path.name}.tmp.{uuid.uuid4().hex}")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(artifact, indent=2, sort_keys=True))
+        f.write("\n")
+    tmp_path.replace(out_path)
+
+
+def verify_consistency_proof_artifact(
+    artifact: dict,
+    expected_room: str | None = None,
+    expected_old_generation: int | None = None,
+    expected_new_generation: int | None = None,
+    expected_old_root: str | None = None,
+    expected_new_root: str | None = None,
+) -> dict:
+    """Verify a C7 consistency proof artifact and check against optional trust anchors."""
+    if not isinstance(artifact, dict):
+        return {"valid": False, "error": "artifact must be a dictionary"}
+
+    required_keys = [
+        "version",
+        "schema",
+        "profile",
+        "room",
+        "old_generation",
+        "new_generation",
+        "old_tree_size",
+        "new_tree_size",
+        "old_root",
+        "new_root",
+        "proof",
+    ]
+    for k in required_keys:
+        if k not in artifact:
+            return {"valid": False, "error": f"missing required key '{k}'"}
+
+    if artifact.get("version") != 1:
+        return {"valid": False, "error": "unsupported version"}
+    if artifact.get("schema") != "tc-ledger/consistency-proof/v1":
+        return {"valid": False, "error": "unsupported schema"}
+    if artifact.get("profile") != "tc-ledger/1":
+        return {"valid": False, "error": "unsupported profile"}
+
+    room = artifact.get("room", "")
+    old_gen = artifact.get("old_generation")
+    new_gen = artifact.get("new_generation")
+    old_size = artifact.get("old_tree_size")
+    new_size = artifact.get("new_tree_size")
+    old_root_hex = artifact.get("old_root", "")
+    new_root_hex = artifact.get("new_root", "")
+    proof_hex_list = artifact.get("proof")
+
+    if not isinstance(room, str) or not room:
+        return {"valid": False, "error": "invalid room"}
+    if not isinstance(old_gen, int) or old_gen < 0:
+        return {"valid": False, "error": "invalid old_generation"}
+    if not isinstance(new_gen, int) or new_gen < 0:
+        return {"valid": False, "error": "invalid new_generation"}
+    if old_gen > new_gen:
+        return {"valid": False, "error": "old_generation exceeds new_generation"}
+
+    if not isinstance(old_size, int) or old_size < 0:
+        return {"valid": False, "error": "invalid old_tree_size"}
+    if not isinstance(new_size, int) or new_size < 0:
+        return {"valid": False, "error": "invalid new_tree_size"}
+    if old_size > new_size:
+        return {"valid": False, "error": "old_tree_size exceeds new_tree_size"}
+
+    if expected_room and room != expected_room:
+        return {"valid": False, "error": f"room mismatch: expected {expected_room}, got {room}"}
+    if expected_old_generation is not None and old_gen != expected_old_generation:
+        return {
+            "valid": False,
+            "error": f"old generation mismatch: expected {expected_old_generation}, got {old_gen}",
+        }
+    if expected_new_generation is not None and new_gen != expected_new_generation:
+        return {
+            "valid": False,
+            "error": f"new generation mismatch: expected {expected_new_generation}, got {new_gen}",
+        }
+    if expected_old_root and old_root_hex.lower() != expected_old_root.lower():
+        return {
+            "valid": False,
+            "error": f"old root mismatch: expected {expected_old_root}, got {old_root_hex}",
+        }
+    if expected_new_root and new_root_hex.lower() != expected_new_root.lower():
+        return {
+            "valid": False,
+            "error": f"new root mismatch: expected {expected_new_root}, got {new_root_hex}",
+        }
+
+    try:
+        old_root_bytes = bytes.fromhex(old_root_hex)
+        new_root_bytes = bytes.fromhex(new_root_hex)
+        if len(old_root_bytes) != 32 or len(new_root_bytes) != 32:
+            return {"valid": False, "error": "roots must be 32 bytes"}
+        if not isinstance(proof_hex_list, list):
+            return {"valid": False, "error": "proof must be a list"}
+        proof_bytes_list = []
+        for item in proof_hex_list:
+            if not isinstance(item, str):
+                return {"valid": False, "error": "proof nodes must be hex strings"}
+            node = bytes.fromhex(item)
+            if len(node) != 32:
+                return {"valid": False, "error": "proof nodes must be 32 bytes"}
+            proof_bytes_list.append(node)
+    except (ValueError, TypeError) as exc:
+        return {"valid": False, "error": f"hex decoding error: {exc}"}
+
+    crypto_valid = verify_consistency_proof(
+        old_size=old_size,
+        new_size=new_size,
+        old_root=old_root_bytes,
+        new_root=new_root_bytes,
+        proof=proof_bytes_list,
+    )
+
+    if not crypto_valid:
+        return {"valid": False, "error": "cryptographic consistency proof verification failed"}
+
+    return {
+        "valid": True,
+        "error": None,
+        "schema": artifact["schema"],
+        "room": room,
+        "old_generation": old_gen,
+        "new_generation": new_gen,
+        "old_tree_size": old_size,
+        "new_tree_size": new_size,
+        "old_root": old_root_hex,
+        "new_root": new_root_hex,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify signed records from a Technocore room export."
@@ -1168,6 +1500,40 @@ def main() -> int:
     verify_commit_parser.add_argument("--expected-room", help="expected room identifier")
     verify_commit_parser.add_argument("--expected-generation", type=int, help="expected export generation")
     verify_commit_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
+
+    consistency_proof_parser = subparsers.add_parser(
+        "consistency-proof",
+        help="generate a Cross-Generation Consistency Proof v1 artifact between two exports",
+    )
+    consistency_proof_parser.add_argument("old_export", help="path to prior export file")
+    consistency_proof_parser.add_argument("new_export", help="path to subsequent export file")
+    consistency_proof_parser.add_argument("--room", required=True, help="room identifier")
+    consistency_proof_parser.add_argument(
+        "--old-generation",
+        required=True,
+        type=int,
+        help="prior export generation",
+    )
+    consistency_proof_parser.add_argument(
+        "--new-generation",
+        required=True,
+        type=int,
+        help="subsequent export generation",
+    )
+    consistency_proof_parser.add_argument("--output", help="output file path for proof artifact")
+    consistency_proof_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
+
+    verify_consistency_parser = subparsers.add_parser(
+        "verify-consistency",
+        help="verify a Cross-Generation Consistency Proof v1 artifact",
+    )
+    verify_consistency_parser.add_argument("proof", help="path to consistency proof artifact JSON")
+    verify_consistency_parser.add_argument("--expected-room", help="expected room identifier")
+    verify_consistency_parser.add_argument("--expected-old-generation", type=int, help="expected prior export generation")
+    verify_consistency_parser.add_argument("--expected-new-generation", type=int, help="expected subsequent export generation")
+    verify_consistency_parser.add_argument("--expected-old-root", help="expected prior export Merkle root")
+    verify_consistency_parser.add_argument("--expected-new-root", help="expected subsequent export Merkle root")
+    verify_consistency_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
     args = parser.parse_args()
     is_json = getattr(args, "json", False)
@@ -1492,6 +1858,92 @@ def main() -> int:
                 print(f"{label}: VALID")
             else:
                 print(f"{label}: INVALID", file=sys.stderr)
+
+        return 0 if valid else 1
+
+    if args.command == "consistency-proof":
+        try:
+            artifact = build_consistency_proof_artifact(
+                old_export_path=args.old_export,
+                new_export_path=args.new_export,
+                room=args.room,
+                old_generation=args.old_generation,
+                new_generation=args.new_generation,
+            )
+            if args.output:
+                write_consistency_proof_artifact(args.output, artifact)
+        except OSError as exc:
+            print(f"CONSISTENCY-PROOF: FAIL: {exc}", file=sys.stderr)
+            return 3
+        except (ValueError, TypeError) as exc:
+            print(f"CONSISTENCY-PROOF: FAIL: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"CONSISTENCY-PROOF: FAIL: {exc}", file=sys.stderr)
+            return 3
+
+        if is_json:
+            out_obj = {
+                "command": "consistency-proof",
+                "valid": True,
+                "room": args.room,
+                "old_generation": args.old_generation,
+                "new_generation": args.new_generation,
+                "old_tree_size": artifact["old_tree_size"],
+                "new_tree_size": artifact["new_tree_size"],
+                "old_root": artifact["old_root"],
+                "new_root": artifact["new_root"],
+                "proof_length": len(artifact["proof"]),
+            }
+            if args.output:
+                out_obj["output"] = args.output
+            out_obj["artifact"] = artifact
+            print(json.dumps(out_obj, indent=2, sort_keys=True))
+        else:
+            if args.output:
+                print(f"Consistency proof artifact: {args.output}")
+            else:
+                print(json.dumps(artifact, indent=2, sort_keys=True))
+
+        return 0
+
+    if args.command == "verify-consistency":
+        try:
+            artifact_data = json.loads(Path(args.proof).read_text(encoding="utf-8"))
+        except OSError as exc:
+            print(f"VERIFY-CONSISTENCY: FAIL: {exc}", file=sys.stderr)
+            return 3
+        except json.JSONDecodeError as exc:
+            print(f"VERIFY-CONSISTENCY: FAIL: {exc}", file=sys.stderr)
+            return 3
+
+        res = verify_consistency_proof_artifact(
+            artifact=artifact_data,
+            expected_room=args.expected_room,
+            expected_old_generation=args.expected_old_generation,
+            expected_new_generation=args.expected_new_generation,
+            expected_old_root=args.expected_old_root,
+            expected_new_root=args.expected_new_root,
+        )
+
+        valid = res["valid"]
+
+        if is_json:
+            out_obj = {
+                "command": "verify-consistency",
+                "valid": valid,
+            }
+            if res.get("error"):
+                out_obj["error"] = res["error"]
+            for k in ["room", "old_generation", "new_generation", "old_tree_size", "new_tree_size", "old_root", "new_root"]:
+                if k in res:
+                    out_obj[k] = res[k]
+            print(json.dumps(out_obj, indent=2, sort_keys=True))
+        else:
+            if valid:
+                print("VERIFY-CONSISTENCY: VALID")
+            else:
+                print(f"VERIFY-CONSISTENCY: INVALID ({res.get('error')})", file=sys.stderr)
 
         return 0 if valid else 1
 

@@ -161,6 +161,65 @@ def main():
         print(f"    Output: {out}")
         assert code == 1 and "VERIFY-PROOF: INVALID" in out, "Tampered proof unexpectedly succeeded!"
 
+    # C7: Cross-Generation Merkle Consistency Proof
+    gen2_export = EXAMPLES_DIR / "synthetic_export_gen2.jsonl"
+    consistency_proof_file = EXAMPLES_DIR / "consistency_proof.json"
+
+    if args.regenerate:
+        print("\n[7] Regenerating Cross-Generation Consistency Proof (tc-ledger consistency-proof)...")
+        code, out = run_cmd([
+            "consistency-proof",
+            str(EXPORT_FILE),
+            str(gen2_export),
+            "--room",
+            ROOM,
+            "--old-generation",
+            "1",
+            "--new-generation",
+            "2",
+            "--output",
+            str(consistency_proof_file),
+        ])
+        print(f"    Return code: {code}")
+        assert code == 0, "Consistency proof regeneration failed!"
+
+    print("\n[7] Cross-Generation Consistency Proof Verification (tc-ledger verify-consistency)...")
+    code, out = run_cmd([
+        "verify-consistency",
+        str(consistency_proof_file),
+        "--expected-room",
+        ROOM,
+        "--expected-old-generation",
+        "1",
+        "--expected-new-generation",
+        "2",
+        "--expected-old-root",
+        export_root,
+    ])
+    print(f"    Return code: {code}")
+    print(f"    Output: {out}")
+    assert code == 0 and "VERIFY-CONSISTENCY: VALID" in out, "Consistency proof verification failed!"
+
+    print("\n[8] Adversarial Check: Tampered Consistency Proof...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tampered_proof_path = Path(tmpdir) / "tampered_proof.json"
+        proof_obj = json.loads(consistency_proof_file.read_text(encoding="utf-8"))
+        proof_obj["proof"] = ["00" * 32]
+        tampered_proof_path.write_text(json.dumps(proof_obj), encoding="utf-8")
+        code, out = run_cmd([
+            "verify-consistency",
+            str(tampered_proof_path),
+            "--expected-room",
+            ROOM,
+            "--expected-old-generation",
+            "1",
+            "--expected-new-generation",
+            "2",
+        ])
+        print(f"    Return code: {code} (Expected: 1)")
+        print(f"    Output: {out}")
+        assert code == 1 and "VERIFY-CONSISTENCY: INVALID" in out, "Tampered consistency proof unexpectedly succeeded!"
+
     print("\n" + "=" * 70)
     print("DEMO COMPLETE: All verification stages succeeded deterministically!")
     print("=" * 70)

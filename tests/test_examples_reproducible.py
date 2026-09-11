@@ -10,6 +10,7 @@ from tc_ledger.ledger import (
     verify_commitment_artifact,
     verify_inclusion_proof_artifact,
     verify_export_inclusion_proof,
+    verify_consistency_proof_artifact,
     verify_export,
     export_merkle_root,
 )
@@ -170,3 +171,36 @@ def test_demo_script_leaves_working_tree_clean():
     )
     assert diff_res.returncode == 0
     # Shipped files shouldn't change when demo is executed
+
+
+def test_shipped_consistency_proof_verifies():
+    gen2_file = EXAMPLES_DIR / "synthetic_export_gen2.jsonl"
+    consistency_file = EXAMPLES_DIR / "consistency_proof.json"
+    consistency_schema = json.loads((SCHEMAS_DIR / "consistency-proof-v1.schema.json").read_text(encoding="utf-8"))
+
+    assert gen2_file.is_file(), "synthetic_export_gen2.jsonl must exist"
+    assert consistency_file.is_file(), "consistency_proof.json must exist"
+
+    artifact = json.loads(consistency_file.read_text(encoding="utf-8"))
+    jsonschema.validate(artifact, consistency_schema)
+
+    assert artifact["schema"] == "tc-ledger/consistency-proof/v1"
+    assert artifact["version"] == 1
+    assert artifact["profile"] == "tc-ledger/1"
+    assert artifact["room"] == ROOM
+    assert artifact["old_generation"] == 1
+    assert artifact["new_generation"] == 2
+    assert artifact["old_tree_size"] == 4
+    assert artifact["new_tree_size"] == 6
+    assert artifact["old_root"] == EXPECTED_ROOT
+
+    # Verify consistency artifact
+    res = verify_consistency_proof_artifact(
+        artifact,
+        expected_room=ROOM,
+        expected_old_generation=1,
+        expected_new_generation=2,
+        expected_old_root=EXPECTED_ROOT,
+        expected_new_root=artifact["new_root"],
+    )
+    assert res["valid"] is True, f"Consistency verification failed: {res.get('error')}"

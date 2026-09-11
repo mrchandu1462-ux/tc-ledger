@@ -1,0 +1,373 @@
+{
+  "cases": [
+    {
+      "description": "Valid append-only transition from tree size 1 to 1",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_1_to_1",
+      "new_generation": 2,
+      "new_root": "38f4bdd00ff7e6b28a9bfe142deaa66e8244fd00cc8e1253be1c89dcbfac6c25",
+      "new_tree_size": 1,
+      "old_generation": 1,
+      "old_root": "38f4bdd00ff7e6b28a9bfe142deaa66e8244fd00cc8e1253be1c89dcbfac6c25",
+      "old_tree_size": 1,
+      "proof": [],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 1 to 2",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_1_to_2",
+      "new_generation": 2,
+      "new_root": "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+      "new_tree_size": 2,
+      "old_generation": 1,
+      "old_root": "38f4bdd00ff7e6b28a9bfe142deaa66e8244fd00cc8e1253be1c89dcbfac6c25",
+      "old_tree_size": 1,
+      "proof": [
+        "9477d8e1a34d660558d6ec526afbabadfeb9733465285f3db277041c7e464a03"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 1 to 3",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_1_to_3",
+      "new_generation": 2,
+      "new_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "new_tree_size": 3,
+      "old_generation": 1,
+      "old_root": "38f4bdd00ff7e6b28a9bfe142deaa66e8244fd00cc8e1253be1c89dcbfac6c25",
+      "old_tree_size": 1,
+      "proof": [
+        "9477d8e1a34d660558d6ec526afbabadfeb9733465285f3db277041c7e464a03",
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 1 to 4",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_1_to_4",
+      "new_generation": 2,
+      "new_root": "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe",
+      "new_tree_size": 4,
+      "old_generation": 1,
+      "old_root": "38f4bdd00ff7e6b28a9bfe142deaa66e8244fd00cc8e1253be1c89dcbfac6c25",
+      "old_tree_size": 1,
+      "proof": [
+        "9477d8e1a34d660558d6ec526afbabadfeb9733465285f3db277041c7e464a03",
+        "b187d7354309c982eeee491d8890deb1c96d961c39e4413b3547a896793b6e57"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 2 to 3",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_2_to_3",
+      "new_generation": 2,
+      "new_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "new_tree_size": 3,
+      "old_generation": 1,
+      "old_root": "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+      "old_tree_size": 2,
+      "proof": [
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 2 to 4",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_2_to_4",
+      "new_generation": 2,
+      "new_root": "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe",
+      "new_tree_size": 4,
+      "old_generation": 1,
+      "old_root": "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+      "old_tree_size": 2,
+      "proof": [
+        "b187d7354309c982eeee491d8890deb1c96d961c39e4413b3547a896793b6e57"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 2 to 5",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_2_to_5",
+      "new_generation": 2,
+      "new_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+      "old_tree_size": 2,
+      "proof": [
+        "b187d7354309c982eeee491d8890deb1c96d961c39e4413b3547a896793b6e57",
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 3 to 4",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_3_to_4",
+      "new_generation": 2,
+      "new_root": "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe",
+      "new_tree_size": 4,
+      "old_generation": 1,
+      "old_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "old_tree_size": 3,
+      "proof": [
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281",
+        "6b63c6b8cb26166561fd044893d8e45f4787827d37df0c4023e5cce08c537d29",
+        "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 3 to 5",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_3_to_5",
+      "new_generation": 2,
+      "new_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "old_tree_size": 3,
+      "proof": [
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281",
+        "6b63c6b8cb26166561fd044893d8e45f4787827d37df0c4023e5cce08c537d29",
+        "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 4 to 5",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_4_to_5",
+      "new_generation": 2,
+      "new_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe",
+      "old_tree_size": 4,
+      "proof": [
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 4 to 8",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_4_to_8",
+      "new_generation": 2,
+      "new_root": "c8b32dd3bd4ad94f649e4f113a689343725693a2235e7679c3d08d409e0514eb",
+      "new_tree_size": 8,
+      "old_generation": 1,
+      "old_root": "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe",
+      "old_tree_size": 4,
+      "proof": [
+        "f039e177d6d4d83bf807ffd0c83b5049f7b2025280e1ec51f15a0d9794359672"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 5 to 8",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_5_to_8",
+      "new_generation": 2,
+      "new_root": "c8b32dd3bd4ad94f649e4f113a689343725693a2235e7679c3d08d409e0514eb",
+      "new_tree_size": 8,
+      "old_generation": 1,
+      "old_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "old_tree_size": 5,
+      "proof": [
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b",
+        "cdc759928ceaff2501827b002acb15ca0f838c777ea97cb18873890257316ca8",
+        "38dfef571337437a509343492b2881ea5d5bd6f74566c065a18a3be35063c171",
+        "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 7 to 8",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_7_to_8",
+      "new_generation": 2,
+      "new_root": "c8b32dd3bd4ad94f649e4f113a689343725693a2235e7679c3d08d409e0514eb",
+      "new_tree_size": 8,
+      "old_generation": 1,
+      "old_root": "6389e6dec069bfc29956cb1eb3171ecc61a44299619d602d52ad2a2ac986d2ca",
+      "old_tree_size": 7,
+      "proof": [
+        "3f5f58389b96951ab92ee95ba82dcac94bacbe3dd4fc0772711a8f7e222d0ae8",
+        "0f8bd6154781d7a2fa8eed73fb9c196950f9aac03a946b9104142b7f45d4d292",
+        "23550c37c548e8383e9477e4e75069c51a6c17f24c5cb1d6db6f5a8c87c38bea",
+        "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Valid append-only transition from tree size 5 to 11",
+      "expected_error": null,
+      "expected_valid": true,
+      "id": "positive_5_to_11",
+      "new_generation": 2,
+      "new_root": "6cae256c4d5af56a3cbe4b74b30efcd645fff72bae1c2c8078cf330cc6294b5c",
+      "new_tree_size": 11,
+      "old_generation": 1,
+      "old_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "old_tree_size": 5,
+      "proof": [
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b",
+        "cdc759928ceaff2501827b002acb15ca0f838c777ea97cb18873890257316ca8",
+        "38dfef571337437a509343492b2881ea5d5bd6f74566c065a18a3be35063c171",
+        "e2d562ad11efc2b55a129e8906158154c302df813b2a630e22dafd099413e9fe",
+        "2d1a21bc226945e3b7548122ab2345f47497baf487c7b8880c46c5fd53f67f26"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "old_size (3) > new_size (2) must fail",
+      "expected_error": "old_size cannot exceed new_size",
+      "expected_valid": false,
+      "id": "negative_size_inversion",
+      "new_generation": 2,
+      "new_root": "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+      "new_tree_size": 2,
+      "old_generation": 1,
+      "old_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "old_tree_size": 3,
+      "proof": [],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Tampered old root must fail verification",
+      "expected_error": "consistency proof verification failed",
+      "expected_valid": false,
+      "id": "negative_wrong_old_root",
+      "new_generation": 2,
+      "new_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "0000000000000000000000000000000000000000000000000000000000000000",
+      "old_tree_size": 3,
+      "proof": [
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281",
+        "6b63c6b8cb26166561fd044893d8e45f4787827d37df0c4023e5cce08c537d29",
+        "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Tampered new root must fail verification",
+      "expected_error": "consistency proof verification failed",
+      "expected_valid": false,
+      "id": "negative_wrong_new_root",
+      "new_generation": 2,
+      "new_root": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "old_tree_size": 3,
+      "proof": [
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281",
+        "6b63c6b8cb26166561fd044893d8e45f4787827d37df0c4023e5cce08c537d29",
+        "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Bit-flipped proof node must fail verification",
+      "expected_error": "consistency proof verification failed",
+      "expected_valid": false,
+      "id": "negative_tampered_proof_node",
+      "new_generation": 2,
+      "new_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "old_tree_size": 3,
+      "proof": [
+        "abababababababababababababababababababababababababababababababab",
+        "6b63c6b8cb26166561fd044893d8e45f4787827d37df0c4023e5cce08c537d29",
+        "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Proof with missing node must fail verification",
+      "expected_error": "consistency proof verification failed",
+      "expected_valid": false,
+      "id": "negative_truncated_proof",
+      "new_generation": 2,
+      "new_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "old_tree_size": 3,
+      "proof": [
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281",
+        "6b63c6b8cb26166561fd044893d8e45f4787827d37df0c4023e5cce08c537d29",
+        "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314"
+      ],
+      "room": "conformance-room"
+    },
+    {
+      "description": "Proof with superfluous node must fail verification",
+      "expected_error": "consistency proof verification failed",
+      "expected_valid": false,
+      "id": "negative_extra_proof_node",
+      "new_generation": 2,
+      "new_root": "732690d15ecede415f0c1ec7415084a111fb01a650f7b69de1cfa652674f42b7",
+      "new_tree_size": 5,
+      "old_generation": 1,
+      "old_root": "6f5755d2723ca6cc75cfb537af268bf564a41ff60265ce9da471e452bef5360c",
+      "old_tree_size": 3,
+      "proof": [
+        "566395fec374a4371cfc485fe985880196cf73731f373a9e31fb1470dde08281",
+        "6b63c6b8cb26166561fd044893d8e45f4787827d37df0c4023e5cce08c537d29",
+        "bd6d7625f51eaf405bc3717b1fb0094ac1ff302d673dec28908b5b044f99c314",
+        "837d7006783a7d39e5a8ac89b66fa39cb8b843f97028a22be677a616aea4f85b",
+        "1212121212121212121212121212121212121212121212121212121212121212"
+      ],
+      "room": "conformance-room"
+    }
+  ],
+  "description": "C7 Cross-Generation Merkle Consistency Proof Conformance Vectors",
+  "leaf_fixtures": [
+    "{\"room\":\"conformance-room\",\"seq\":1,\"text\":\"message 1\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":2,\"text\":\"message 2\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":3,\"text\":\"message 3\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":4,\"text\":\"message 4\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":5,\"text\":\"message 5\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":6,\"text\":\"message 6\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":7,\"text\":\"message 7\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":8,\"text\":\"message 8\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":9,\"text\":\"message 9\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":10,\"text\":\"message 10\"}\n",
+    "{\"room\":\"conformance-room\",\"seq\":11,\"text\":\"message 11\"}\n"
+  ],
+  "new_generation": 2,
+  "old_generation": 1,
+  "profile": "tc-ledger/1",
+  "room": "conformance-room",
+  "schema": "tc-ledger/consistency-vectors/v1",
+  "version": 1
+}

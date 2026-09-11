@@ -5,6 +5,16 @@
 	c-ledger provides an offline evidence and verification pipeline for Technocore room exports.
 
 ### What TC-Ledger Proves
+### 4. Cross-Generation Cryptographic Consistency Proofs (C7)
+- **Append-Only Extension**: Given trusted Merkle root $R_m$ of export generation $m$ (size $m$) and trusted Merkle root $R_n$ of export generation $n$ (size $n$, $n \ge m$), an RFC 6962-compliant consistency proof cryptographically proves that the first $m$ leaves of generation $n$ are identical byte-for-byte to generation $m$.
+- **Room and Generation Binding**: C7 consistency proof artifacts bind the room, old generation, new generation, old tree size, new tree size, old root, and new root together. Verifiers reject artifacts with mismatched rooms, inverted generations, or mismatched roots.
+- **Fail-Closed Verification**: Any altered proof node, truncated path, extraneous node, or modified root causes verification to fail with exit code 1.
+
+### What TC-Ledger Does NOT Prove
+- **Complete Lifetime History**: Technocore servers can prune historical records or rolling buffers. A consistency proof proves continuity between two specific committed export snapshots; it does not prove that the server never pruned earlier uncommitted records.
+- **Root Publication Authenticity**: TC-Ledger verifies consistency between two given roots. It relies on the verifier (or upstream trust anchors such as signed commitment headers or on-chain anchors) to provide authentic roots.
+- **Absence of Server-Side Selective Omission**: Consistency proofs only prove that an existing committed tree is a prefix of a later committed tree.
+
 1. **Cryptographic Authenticity of Records**:
    Ed25519 signatures from did:key:z... authors are verified against the exact canonical payload:
 

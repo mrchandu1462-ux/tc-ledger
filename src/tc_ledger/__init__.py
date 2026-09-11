@@ -35,11 +35,17 @@ from .ledger import (
     write_inclusion_proof_artifact,
     verify_export_inclusion_proof,
     verify_inclusion_proof_artifact,
+    # C7 Consistency proof artifacts
+    consistency_proof,
+    verify_consistency_proof,
+    build_consistency_proof_artifact,
+    write_consistency_proof_artifact,
+    verify_consistency_proof_artifact,
     # CLI entry point
     main,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",
@@ -71,5 +77,10 @@ __all__ = [
     "write_inclusion_proof_artifact",
     "verify_export_inclusion_proof",
     "verify_inclusion_proof_artifact",
+    "consistency_proof",
+    "verify_consistency_proof",
+    "build_consistency_proof_artifact",
+    "write_consistency_proof_artifact",
+    "verify_consistency_proof_artifact",
     "main",
 ]

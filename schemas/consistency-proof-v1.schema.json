@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrchandu1462-ux/tc-ledger/schemas/consistency-proof-v1.schema.json",
+  "title": "Cross-Generation Consistency Proof v1",
+  "description": "JSON Schema for tc-ledger Cross-Generation Consistency Proof v1 artifacts",
+  "type": "object",
+  "required": [
+    "version",
+    "schema",
+    "profile",
+    "room",
+    "old_generation",
+    "new_generation",
+    "old_tree_size",
+    "new_tree_size",
+    "old_root",
+    "new_root",
+    "proof"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Proof format version"
+    },
+    "schema": {
+      "type": "string",
+      "const": "tc-ledger/consistency-proof/v1",
+      "description": "Schema URI identifier"
+    },
+    "profile": {
+      "type": "string",
+      "const": "tc-ledger/1",
+      "description": "Verification profile identifier"
+    },
+    "room": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Technocore room identifier"
+    },
+    "old_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Prior export generation / epoch"
+    },
+    "new_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Subsequent export generation / epoch"
+    },
+    "old_tree_size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of leaves in the prior export Merkle tree"
+    },
+    "new_tree_size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of leaves in the subsequent export Merkle tree"
+    },
+    "old_root": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hex-encoded 32-byte Merkle root of the prior export"
+    },
+    "new_root": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hex-encoded 32-byte Merkle root of the subsequent export"
+    },
+    "proof": {
+      "type": "array",
+      "description": "Ordered RFC 6962 consistency proof node hashes",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$",
+        "description": "Hex-encoded 32-byte Merkle node hash"
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,15 @@
+{
+  "new_generation": 2,
+  "new_root": "792e762d74456dab8b4905490213491d6d4533a10f333da7447c2541bb81d341",
+  "new_tree_size": 6,
+  "old_generation": 1,
+  "old_root": "0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9",
+  "old_tree_size": 4,
+  "profile": "tc-ledger/1",
+  "proof": [
+    "b146097ac3c38f301e368188387519d048837b6caeabce315ceb62a23c7a5bc2"
+  ],
+  "room": "demo-room",
+  "schema": "tc-ledger/consistency-proof/v1",
+  "version": 1
+}

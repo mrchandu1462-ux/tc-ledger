@@ -1,6 +1,6 @@
 [project]
 name = "tc-ledger"
-version = "0.2.0"
+version = "0.3.0"
 description = "A small, open-source evidence layer for independent verification of signed Technocore exports"
 readme = "README.md"
 license = "Apache-2.0"

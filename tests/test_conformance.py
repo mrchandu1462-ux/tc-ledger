@@ -22,6 +22,9 @@ from tc_ledger.ledger import (
     build_inclusion_proof_artifact,
     verify_inclusion_proof_artifact,
     verify_export_inclusion_proof,
+    verify_consistency_proof,
+    consistency_proof,
+    export_merkle_root,
     classify_export_lines,
     InvalidSignature,
     MalformedRecord,
@@ -370,3 +373,48 @@ def test_phase9_retained_export_sparse_sequence_window():
     assert art["line_count"] == 3
     assert art["export_generation"] == 42
     assert verify_commitment_artifact(sparse_export, art, expected_generation=42, expected_room=room)
+
+
+# -----------------------------------------------------------------------------
+# C7: Cross-Generation Merkle Consistency Proofs
+# -----------------------------------------------------------------------------
+
+def test_c7_conformance_vectors(conformance_data):
+    c7 = conformance_data["C7_consistency_proof_cases"]
+    cases = c7["cases"]
+    assert len(cases) > 0
+
+    for case in cases:
+        old_size = case["old_tree_size"]
+        new_size = case["new_tree_size"]
+        old_root = case["old_root"]
+        new_root = case["new_root"]
+        proof = case["proof"]
+        expected_valid = case["expected_valid"]
+
+        res = verify_consistency_proof(
+            old_size=old_size,
+            new_size=new_size,
+            old_root=old_root,
+            new_root=new_root,
+            proof=proof,
+        )
+        assert res is expected_valid, f"Failed for case {case['id']}"
+
+
+def test_c7_conformance_positive_vectors_regenerated(conformance_data):
+    c7 = conformance_data["C7_consistency_proof_cases"]
+    leaf_fixtures = [l.encode("utf-8") for l in c7["leaf_fixtures"]]
+
+    for case in c7["cases"]:
+        if not case["expected_valid"]:
+            continue
+
+        m = case["old_tree_size"]
+        n = case["new_tree_size"]
+        gen_proof = consistency_proof(m, leaf_fixtures[:n])
+        gen_proof_hex = [p.hex() for p in gen_proof]
+
+        assert gen_proof_hex == case["proof"], f"Regenerated proof mismatch for case {case['id']}"
+        assert export_merkle_root(leaf_fixtures[:m]).hex() == case["old_root"]
+        assert export_merkle_root(leaf_fixtures[:n]).hex() == case["new_root"]
