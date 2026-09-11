@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrchandu1462-ux/tc-ledger/schemas/inclusion-proof-v1.schema.json",
+  "title": "Export Inclusion Proof v1",
+  "description": "JSON Schema for tc-ledger Export Inclusion Proof v1 artifacts",
+  "type": "object",
+  "required": [
+    "version",
+    "schema",
+    "profile",
+    "room",
+    "tree_size",
+    "leaf_index",
+    "leaf_hash",
+    "export_root",
+    "audit_path"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Proof format version"
+    },
+    "schema": {
+      "type": "string",
+      "const": "tc-ledger/inclusion-proof/v1",
+      "description": "Schema URI identifier"
+    },
+    "profile": {
+      "type": "string",
+      "const": "tc-ledger/1",
+      "description": "Verification profile identifier"
+    },
+    "room": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Technocore room identifier"
+    },
+    "tree_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total number of leaves in the export Merkle tree"
+    },
+    "leaf_index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0-based leaf index within the export"
+    },
+    "leaf_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "RFC 6962 leaf hash (SHA-256 with 0x00 prefix)"
+    },
+    "export_root": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "RFC 6962 export Merkle root hash"
+    },
+    "audit_path": {
+      "type": "array",
+      "description": "Ordered sibling hashes and relative positions from leaf to root",
+      "items": {
+        "type": "object",
+        "required": ["position", "sibling_hash"],
+        "properties": {
+          "position": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Position of the sibling relative to the path node"
+          },
+          "sibling_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Hex-encoded 32-byte sibling node hash"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "export_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional room epoch / generation trust anchor"
+    }
+  },
+  "additionalProperties": false
+}

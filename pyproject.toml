@@ -1,8 +1,9 @@
 [project]
 name = "tc-ledger"
-version = "0.1.0"
+version = "0.2.0"
 description = "A small, open-source evidence layer for independent verification of signed Technocore exports"
 readme = "README.md"
+license = "Apache-2.0"
 authors = [
     { name = "Chandu Saikam", email = "btech21279@gmail.com" }
 ]
@@ -12,6 +13,20 @@ dependencies = [
     "jcs>=0.2.1",
     "pynacl>=1.6.2",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+]
+
+[project.urls]
+Homepage = "https://github.com/mrchandu1462-ux/tc-ledger"
+Repository = "https://github.com/mrchandu1462-ux/tc-ledger"
+Issues = "https://github.com/mrchandu1462-ux/tc-ledger/issues"
 
 [project.scripts]
 tc-ledger = "tc_ledger.ledger:main"
@@ -23,4 +38,5 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "jsonschema>=4.20.0",
 ]

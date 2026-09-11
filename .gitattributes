@@ -1,0 +1,9 @@
+# Auto detect text files and perform LF normalization by default
+* text=auto eol=lf
+
+# Cryptographic and byte-exact artifacts MUST NOT have line endings modified
+*.jsonl -text
+*.bin -text
+examples/** -text
+vectors/** -text
+schemas/** -text

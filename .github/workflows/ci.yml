@@ -3,13 +3,18 @@ name: CI
 on:
   push:
     branches: [ master, main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ master, main ]
 
 jobs:
   test-python:
-    name: Python Test Suite & Vectors
-    runs-on: ubuntu-latest
+    name: Python Test Matrix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -21,11 +26,25 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      - name: Run Pytest
+      - name: Run Pytest Suite
         run: uv run pytest
 
-      - name: Validate Frozen RFC 6962 Vectors
-        run: uv run tc-ledger vectors
+      - name: Validate Frozen RFC 6962 Vectors (Human & JSON)
+        run: |
+          uv run tc-ledger vectors
+          uv run tc-ledger vectors --json
+
+      - name: Run End-to-End Demo (Read-Only Check)
+        run: uv run python examples/demo.py
+
+      - name: Verify Shipped Commitment & Proof Artifacts Directly
+        run: |
+          uv run tc-ledger verify examples/synthetic_export.jsonl --room demo-room --json
+          uv run tc-ledger verify-artifact examples/synthetic_export.jsonl examples/commitment.json --expected-room demo-room --expected-root 0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9 --expected-generation 1 --json
+          uv run tc-ledger verify-proof examples/proof_leaf1.json --record examples/record_1.bin --expected-root 0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9 --expected-room demo-room --expected-generation 1 --json
+
+      - name: Assert Working Tree Cleanliness
+        run: git diff --exit-code
 
   test-evm:
     name: EVM Rail Tests (Foundry & TypeScript)
@@ -62,3 +81,6 @@ jobs:
 
       - name: Compile TypeScript
         run: npm run build:ts
+
+      - name: Assert Clean Working Tree
+        run: git diff --exit-code

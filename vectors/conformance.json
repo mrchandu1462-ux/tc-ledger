@@ -1,0 +1,115 @@
+{
+  "C0_export_verification": {
+    "invalid_sig_record": {
+      "from": "did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc",
+      "nonce": 10001,
+      "seq": 2,
+      "sig": "dMxyR6RHk3JBEC1rtBO5hinn56f25kCTiyflbijoKYv_ueDc1EOBhPqzozDwWn5vdolHBnaMIMoQAFN1907NDg",
+      "text": "Tampered text that does not match signature",
+      "ts": "2026-09-01T12:01:00.000000Z"
+    },
+    "malformed_records": [
+      {
+        "from": "did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc",
+        "text": "Missing seq",
+        "ts": "2026-09-01T12:03:00.000000Z"
+      },
+      {
+        "from": "did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc",
+        "nonce": true,
+        "seq": 4,
+        "sig": "dMxyR6RHk3JBEC1rtBO5hinn56f25kCTiyflbijoKYv_ueDc1EOBhPqzozDwWn5vdolHBnaMIMoQAFN1907NDg",
+        "text": "Bool nonce",
+        "ts": "2026-09-01T12:04:00.000000Z"
+      },
+      {
+        "from": "did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc",
+        "nonce": 12345,
+        "seq": 5,
+        "sig": "c2hvcnRfc2ln",
+        "text": "Bad sig length",
+        "ts": "2026-09-01T12:05:00.000000Z"
+      }
+    ],
+    "room": "conformance-room",
+    "unsigned_record": {
+      "from": "did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc",
+      "seq": 3,
+      "text": "An unsigned message in export",
+      "ts": "2026-09-01T12:02:00.000000Z"
+    },
+    "unsupported_key_record": {
+      "from": "did:key:zUnsupportedPrefix123456789",
+      "nonce": 12345,
+      "seq": 6,
+      "sig": "dMxyR6RHk3JBEC1rtBO5hinn56f25kCTiyflbijoKYv_ueDc1EOBhPqzozDwWn5vdolHBnaMIMoQAFN1907NDg",
+      "text": "Unsupported key",
+      "ts": "2026-09-01T12:06:00.000000Z"
+    },
+    "valid_record": {
+      "from": "did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc",
+      "nonce": 10001,
+      "seq": 1,
+      "sig": "dMxyR6RHk3JBEC1rtBO5hinn56f25kCTiyflbijoKYv_ueDc1EOBhPqzozDwWn5vdolHBnaMIMoQAFN1907NDg",
+      "text": "TC-Ledger Conformance Valid Record",
+      "ts": "2026-09-01T12:00:00.000000Z"
+    }
+  },
+  "C1_evidence_commitment": {
+    "canonical_json": "{\"from\":\"did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc\",\"nonce\":10001,\"room\":\"conformance-room\",\"seq\":1,\"sig\":\"dMxyR6RHk3JBEC1rtBO5hinn56f25kCTiyflbijoKYv_ueDc1EOBhPqzozDwWn5vdolHBnaMIMoQAFN1907NDg\",\"text\":\"TC-Ledger Conformance Valid Record\",\"ts\":\"2026-09-01T12:00:00.000000Z\",\"version\":1}",
+    "evidence_id": "tc-ledger:v1:4ca48a7db53badeec4a79ea49ba4fe607ff206c644e4bb3b988dff2dc537f24d",
+    "payload": {
+      "from": "did:key:z6MkoJC23AR631JquDB5YpSeLdnhSsvHZhJVfp9j6Zw6c7jc",
+      "nonce": 10001,
+      "room": "conformance-room",
+      "seq": 1,
+      "sig": "dMxyR6RHk3JBEC1rtBO5hinn56f25kCTiyflbijoKYv_ueDc1EOBhPqzozDwWn5vdolHBnaMIMoQAFN1907NDg",
+      "text": "TC-Ledger Conformance Valid Record",
+      "ts": "2026-09-01T12:00:00.000000Z",
+      "version": 1
+    },
+    "sha256": "4ca48a7db53badeec4a79ea49ba4fe607ff206c644e4bb3b988dff2dc537f24d",
+    "string_nonce_sha256": "357668e9f43ffc2ec98442be18f286148a67ce8ebffec2159f16bca6ec2ea69a"
+  },
+  "C2_merkle_primitives": {
+    "leaf_A": {
+      "hash": "eb131d3f354e1f3570533a7165fa208bd667b6febbe92a62b7ace34f8749efe4",
+      "input_utf8": "leaf_A"
+    },
+    "leaf_B": {
+      "hash": "042c124ceffef91cd98365d8dae5204719358cb462ee5720126d3b48540f8f57",
+      "input_utf8": "leaf_B"
+    },
+    "leaf_C": {
+      "hash": "0440fb7965e8894cc4b5dc820bb9ae40f33619c144f5eacca79472770a464805",
+      "input_utf8": "leaf_C"
+    },
+    "odd_node_promotion_3": {
+      "leaf_hashes": [
+        "eb131d3f354e1f3570533a7165fa208bd667b6febbe92a62b7ace34f8749efe4",
+        "042c124ceffef91cd98365d8dae5204719358cb462ee5720126d3b48540f8f57",
+        "0440fb7965e8894cc4b5dc820bb9ae40f33619c144f5eacca79472770a464805"
+      ],
+      "leaves": [
+        "leaf_A",
+        "leaf_B",
+        "leaf_C"
+      ],
+      "level_1": [
+        "b53e04d3d5eadd4ad8c0a104055583cd0d1d5dd176707a65ae1e94f19f84f787",
+        "0440fb7965e8894cc4b5dc820bb9ae40f33619c144f5eacca79472770a464805"
+      ],
+      "root": "2ff27b27e5c9f419fd92b96944ffd0091ca9d6f0601976689185b404bdfb7e98"
+    }
+  },
+  "C4_export_commitment_cases": {
+    "generation": 7,
+    "room": "conformance-room"
+  },
+  "C5_inclusion_proof_cases": {
+    "generation": 7,
+    "room": "conformance-room"
+  },
+  "profile": "tc-ledger/1",
+  "version": 1
+}

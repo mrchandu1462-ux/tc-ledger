@@ -376,6 +376,7 @@ export class DealWalletApp {
       expiresMs: params.expiresMs,
       paymentKey: params.paymentKey,
       job: params.job,
+      nowMs: this.config.clock ? this.config.clock() : undefined,
     });
 
     const offerFrame = dealManager.state.offer;

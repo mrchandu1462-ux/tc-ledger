@@ -2,16 +2,16 @@
   "audit_path": [
     {
       "position": "left",
-      "sibling_hash": "c28048f1415262900efc0c720e6f8bea7500d7b8128ae129820423242a10dacf"
+      "sibling_hash": "589528377029dc2f622020f4df8f141305d6289ac7c68dcae2ffa66bdaa401b6"
     },
     {
       "position": "right",
-      "sibling_hash": "663eae490110a72182af696c43f5c7f7ac19a718f05a6000f8931233a623b6f9"
+      "sibling_hash": "18972fda6f31cf89c8de7601ba9fe37dafa87581e8fb0f0195cce7a4be52d9a8"
     }
   ],
   "export_generation": 1,
-  "export_root": "aae69af634f328ce701799c7d9e6a7b67403733e0c9f2ddd7de42469e17dcc00",
-  "leaf_hash": "7bbb30d792db2589050c4960325e7d1163b3aa51145a30a61c56e8463b6f364e",
+  "export_root": "0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9",
+  "leaf_hash": "13dbfe722146b058fe8a560b87ac56be426fc785f907fa061121bd5743d21149",
   "leaf_index": 1,
   "profile": "tc-ledger/1",
   "room": "demo-room",

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrchandu1462-ux/tc-ledger/schemas/evidence-v1.schema.json",
+  "title": "Evidence Payload v1",
+  "description": "JSON Schema for canonical tc-ledger Evidence Format v1 payload before RFC 8785 (JCS) canonicalization",
+  "type": "object",
+  "required": [
+    "version",
+    "room",
+    "seq",
+    "ts",
+    "from",
+    "text",
+    "nonce",
+    "sig"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Evidence format version"
+    },
+    "room": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Technocore room identifier"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Server-attested sequence number"
+    },
+    "ts": {
+      "type": "string",
+      "description": "Server-attested ISO-8601 UTC timestamp"
+    },
+    "from": {
+      "type": "string",
+      "pattern": "^did:key:z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "Author DID identifying Ed25519 public key"
+    },
+    "text": {
+      "type": "string",
+      "description": "Message text payload"
+    },
+    "nonce": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "pattern": "^[0-9]{1,19}$"
+        }
+      ],
+      "description": "Author single-use replay protection nonce (1-19 decimal digits)"
+    },
+    "sig": {
+      "type": "string",
+      "description": "Base64URL-encoded 64-byte Ed25519 signature over room|nonce|text"
+    }
+  },
+  "additionalProperties": false
+}

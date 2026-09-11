@@ -567,9 +567,10 @@ def build_commitment_artifact(
     room: str,
     counts: dict[str, int],
     anomaly_indices: list[int],
+    export_generation: int | None = None,
 ) -> dict:
     """Build a machine-readable Export Commitment v1 artifact."""
-    return {
+    artifact = {
         "version": 1,
         "profile": "tc-ledger/1",
         "room": room,
@@ -586,6 +587,13 @@ def build_commitment_artifact(
         },
         "anomaly_indices": list(anomaly_indices),
     }
+    if export_generation is not None:
+        if not isinstance(export_generation, int) or isinstance(export_generation, bool):
+            raise TypeError("export_generation must be an integer")
+        if export_generation < 0:
+            raise ValueError("export_generation must be non-negative")
+        artifact["export_generation"] = export_generation
+    return artifact
 
 
 def classify_export_lines(
@@ -705,9 +713,17 @@ def verify_commitment_artifact(
     if expected_room is not None and room != expected_room:
         return False
 
+    artifact_generation = artifact.get("export_generation", artifact.get("generation"))
+    if artifact_generation is not None:
+        if not isinstance(artifact_generation, int) or isinstance(artifact_generation, bool):
+            return False
+        if artifact_generation < 0:
+            return False
+
     if expected_generation is not None:
-        art_gen = artifact.get("export_generation", artifact.get("generation"))
-        if art_gen != expected_generation:
+        if not isinstance(expected_generation, int) or isinstance(expected_generation, bool):
+            return False
+        if artifact_generation != expected_generation:
             return False
 
     if artifact.get("line_count") != len(raw_lines):
@@ -1064,6 +1080,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify signed records from a Technocore room export."
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="output machine-readable JSON",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     verify_parser = subparsers.add_parser(
@@ -1072,6 +1093,7 @@ def main() -> int:
     )
     verify_parser.add_argument("path")
     verify_parser.add_argument("--room", required=True)
+    verify_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
     commit_parser = subparsers.add_parser(
         "commit",
@@ -1079,12 +1101,22 @@ def main() -> int:
     )
     commit_parser.add_argument("path")
     commit_parser.add_argument("--room", required=True)
+    commit_parser.add_argument(
+        "--generation",
+        "--export-generation",
+        dest="export_generation",
+        type=int,
+        default=None,
+        help="expected room conversation epoch / generation",
+    )
     commit_parser.add_argument("--output")
+    commit_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
-    subparsers.add_parser(
+    vectors_parser = subparsers.add_parser(
         "vectors",
         help="validate frozen v1 test vectors",
     )
+    vectors_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
     prove_parser = subparsers.add_parser(
         "prove",
@@ -1101,6 +1133,7 @@ def main() -> int:
         default=0,
     )
     prove_parser.add_argument("--output")
+    prove_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
     verify_proof_parser = subparsers.add_parser(
         "verify-proof",
@@ -1112,6 +1145,7 @@ def main() -> int:
     verify_proof_parser.add_argument("--expected-root")
     verify_proof_parser.add_argument("--expected-generation", type=int)
     verify_proof_parser.add_argument("--expected-room")
+    verify_proof_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
     verify_artifact_parser = subparsers.add_parser(
         "verify-artifact",
@@ -1122,6 +1156,7 @@ def main() -> int:
     verify_artifact_parser.add_argument("--expected-root", help="expected export Merkle root")
     verify_artifact_parser.add_argument("--expected-room", help="expected room identifier")
     verify_artifact_parser.add_argument("--expected-generation", type=int, help="expected export generation")
+    verify_artifact_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
     verify_commit_parser = subparsers.add_parser(
         "verify-commitment",
@@ -1132,7 +1167,11 @@ def main() -> int:
     verify_commit_parser.add_argument("--expected-root", help="expected export Merkle root")
     verify_commit_parser.add_argument("--expected-room", help="expected room identifier")
     verify_commit_parser.add_argument("--expected-generation", type=int, help="expected export generation")
+    verify_commit_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
+
     args = parser.parse_args()
+    is_json = getattr(args, "json", False)
+
     if args.command == "vectors":
         vectors_path = (
             Path(__file__).resolve().parents[2]
@@ -1229,7 +1268,15 @@ def main() -> int:
             if export_merkle_root(synthetic_lines).hex() != synthetic["root"]:
                 raise ValueError("synthetic root mismatch")
 
-            print("C3 vectors: OK")
+            if is_json:
+                print(json.dumps({
+                    "command": "vectors",
+                    "profile": "tc-ledger/1",
+                    "status": "OK",
+                    "valid": True,
+                }, indent=2, sort_keys=True))
+            else:
+                print("C3 vectors: OK")
             return 0
 
         except (
@@ -1240,22 +1287,48 @@ def main() -> int:
             UnicodeError,
         ) as exc:
             print(f"C3 vectors: FAIL: {exc}", file=sys.stderr)
-            return 3
+            return 1 if "mismatch" in str(exc) else 3
 
     if args.command == "prove":
-        with open(args.path, "rb") as f:
-            raw_lines = f.readlines()
+        try:
+            with open(args.path, "rb") as f:
+                raw_lines = f.readlines()
+        except OSError as exc:
+            print(f"PROVE: FAIL: {exc}", file=sys.stderr)
+            return 3
 
-        artifact = build_inclusion_proof_artifact(
-            raw_lines,
-            args.room,
-            args.leaf_index,
-            export_generation=args.export_generation,
-        )
+        try:
+            artifact = build_inclusion_proof_artifact(
+                raw_lines,
+                args.room,
+                args.leaf_index,
+                export_generation=args.export_generation,
+            )
+        except (ValueError, TypeError, IndexError) as exc:
+            print(f"PROVE: FAIL: {exc}", file=sys.stderr)
+            return 3
 
         if args.output:
-            write_inclusion_proof_artifact(args.output, artifact)
-            print(f"Inclusion proof artifact: {args.output}")
+            try:
+                write_inclusion_proof_artifact(args.output, artifact)
+            except OSError as exc:
+                print(f"PROVE: FAIL: {exc}", file=sys.stderr)
+                return 3
+
+            if is_json:
+                print(
+                    json.dumps({
+                        "command": "prove",
+                        "valid": True,
+                        "room": args.room,
+                        "leaf_index": args.leaf_index,
+                        "export_generation": args.export_generation,
+                        "output": args.output,
+                        "artifact": artifact,
+                    }, indent=2, sort_keys=True)
+                )
+            else:
+                print(f"Inclusion proof artifact: {args.output}")
         else:
             print(
                 json.dumps(
@@ -1267,39 +1340,82 @@ def main() -> int:
             )
 
         return 0
+
     if args.command == "commit":
-        with open(args.path, "rb") as f:
-            raw_lines = f.readlines()
-        index = map_evidence_to_export(raw_lines, args.room)
-        counts = verify_export(args.path, args.room)
-        _, anomaly_indices = classify_export_lines(raw_lines, args.room)
+        try:
+            with open(args.path, "rb") as f:
+                raw_lines = f.readlines()
+            index = map_evidence_to_export(raw_lines, args.room)
+            counts = verify_export(args.path, args.room)
+            _, anomaly_indices = classify_export_lines(raw_lines, args.room)
+        except OSError as exc:
+            print(f"COMMIT: FAIL: {exc}", file=sys.stderr)
+            return 3
+        except Exception as exc:
+            print(f"COMMIT: FAIL: {exc}", file=sys.stderr)
+            return 3
 
-        print(f"Room: {args.room}")
-        print(f"Export lines: {len(raw_lines)}")
-        print(f"Export Merkle root: {index.export_root.hex()}")
-        print(f"Valid signatures: {counts['VALID']}")
-        print(f"Invalid signatures: {counts['INVALID']}")
-        print(f"Unsigned records: {counts['UNSIGNED']}")
-        print(f"Malformed records: {counts['MALFORMED']}")
-        print(f"Unsupported key types: {counts['UNSUPPORTED_KEY']}")
-        print(f"Evidence mappings: {len(index.mappings)}")
-        print(f"Duplicate evidence IDs: {len(find_duplicate_evidence_ids(index))}")
+        is_valid = not (counts["INVALID"] or counts["MALFORMED"])
 
-        if counts["INVALID"] or counts["MALFORMED"]:
-            return 1
+        artifact = None
+        if args.output or is_json:
+            try:
+                artifact = build_commitment_artifact(
+                    raw_lines,
+                    args.room,
+                    counts,
+                    anomaly_indices,
+                    export_generation=args.export_generation,
+                )
+            except Exception as exc:
+                print(f"COMMIT: FAIL: {exc}", file=sys.stderr)
+                return 3
 
-        if args.output:
-            artifact = build_commitment_artifact(
-                raw_lines,
-                args.room,
-                counts,
-                anomaly_indices,
-            )
-            write_commitment_artifact(args.output, artifact)
-            print(f"Commitment artifact: {args.output}")
+        if args.output and artifact is not None:
+            try:
+                write_commitment_artifact(args.output, artifact)
+            except OSError as exc:
+                print(f"COMMIT: FAIL: {exc}", file=sys.stderr)
+                return 3
 
-        return 0
+        if is_json:
+            out_obj = {
+                "command": "commit",
+                "room": args.room,
+                "valid": is_valid,
+                "line_count": len(raw_lines),
+                "export_root": index.export_root.hex(),
+                "verification": counts,
+                "anomaly_indices": anomaly_indices,
+            }
+            if args.export_generation is not None:
+                out_obj["export_generation"] = args.export_generation
+            if args.output:
+                out_obj["output"] = args.output
+            if artifact is not None:
+                out_obj["artifact"] = artifact
+            print(json.dumps(out_obj, indent=2, sort_keys=True))
+        else:
+            print(f"Room: {args.room}")
+            print(f"Export lines: {len(raw_lines)}")
+            print(f"Export Merkle root: {index.export_root.hex()}")
+            print(f"Valid signatures: {counts['VALID']}")
+            print(f"Invalid signatures: {counts['INVALID']}")
+            print(f"Unsigned records: {counts['UNSIGNED']}")
+            print(f"Malformed records: {counts['MALFORMED']}")
+            print(f"Unsupported key types: {counts['UNSUPPORTED_KEY']}")
+            print(f"Evidence mappings: {len(index.mappings)}")
+            print(f"Duplicate evidence IDs: {len(find_duplicate_evidence_ids(index))}")
+            if args.output:
+                print(f"Commitment artifact: {args.output}")
+
+        return 0 if is_valid else 1
+
     if args.command == "verify-proof":
+        if not args.record and not args.export:
+            print("Error: either --record or --export must be provided", file=sys.stderr)
+            return 2
+
         try:
             artifact = json.loads(
                 Path(args.path).read_text(encoding="utf-8")
@@ -1314,7 +1430,7 @@ def main() -> int:
                     expected_generation=args.expected_generation,
                     expected_room=args.expected_room,
                 )
-            elif args.export:
+            else:
                 with open(args.export, "rb") as f:
                     raw_lines = f.readlines()
 
@@ -1327,9 +1443,6 @@ def main() -> int:
                 if valid and args.expected_root:
                     if artifact.get("export_root", "").lower() != args.expected_root.lower():
                         valid = False
-            else:
-                print("Error: either --record or --export must be provided", file=sys.stderr)
-                return 2
 
         except (
             OSError,
@@ -1342,46 +1455,79 @@ def main() -> int:
             print(f"VERIFY-PROOF: FAIL: {exc}", file=sys.stderr)
             return 3
 
-        if valid:
-            print("VERIFY-PROOF: VALID")
-            return 0
+        if is_json:
+            print(json.dumps({
+                "command": "verify-proof",
+                "valid": bool(valid),
+            }, indent=2, sort_keys=True))
+        else:
+            if valid:
+                print("VERIFY-PROOF: VALID")
+            else:
+                print("VERIFY-PROOF: INVALID", file=sys.stderr)
 
-        print("VERIFY-PROOF: INVALID", file=sys.stderr)
-        return 1
+        return 0 if valid else 1
+
     if args.command in ("verify-artifact", "verify-commitment"):
-        valid = verify_commitment_artifact(
-            args.export,
-            args.artifact,
-            expected_root=args.expected_root,
-            expected_room=args.expected_room,
-            expected_generation=args.expected_generation,
-        )
-
         label = "VERIFY-ARTIFACT" if args.command == "verify-artifact" else "VERIFY-COMMITMENT"
-        if valid:
-            print(f"{label}: VALID")
-            return 0
+        try:
+            valid = verify_commitment_artifact(
+                args.export,
+                args.artifact,
+                expected_root=args.expected_root,
+                expected_room=args.expected_room,
+                expected_generation=args.expected_generation,
+            )
+        except Exception as exc:
+            print(f"{label}: FAIL: {exc}", file=sys.stderr)
+            return 3
 
-        print(f"{label}: INVALID", file=sys.stderr)
-        return 1
+        if is_json:
+            print(json.dumps({
+                "command": args.command,
+                "valid": bool(valid),
+            }, indent=2, sort_keys=True))
+        else:
+            if valid:
+                print(f"{label}: VALID")
+            else:
+                print(f"{label}: INVALID", file=sys.stderr)
+
+        return 0 if valid else 1
+
     if args.command == "verify":
-        with open(args.path, "rb") as f:
-            raw_lines = f.readlines()
-        counts = verify_export(args.path, args.room)
-        _, anomaly_indices = classify_export_lines(raw_lines, args.room)
+        try:
+            with open(args.path, "rb") as f:
+                raw_lines = f.readlines()
+            counts = verify_export(args.path, args.room)
+            _, anomaly_indices = classify_export_lines(raw_lines, args.room)
+        except OSError as exc:
+            print(f"VERIFY: FAIL: {exc}", file=sys.stderr)
+            return 3
+        except Exception as exc:
+            print(f"VERIFY: FAIL: {exc}", file=sys.stderr)
+            return 3
 
-        print(f"Room: {args.room}")
-        print(f"Valid signatures: {counts['VALID']}")
-        print(f"Invalid signatures: {counts['INVALID']}")
-        print(f"Unsigned records: {counts['UNSIGNED']}")
-        print(f"Malformed records: {counts['MALFORMED']}")
-        print(f"Unsupported key types: {counts['UNSUPPORTED_KEY']}")
+        is_valid = not (counts["INVALID"] or counts["MALFORMED"])
 
-        if counts["INVALID"] or counts["MALFORMED"]:
-            return 1
+        if is_json:
+            print(json.dumps({
+                "command": "verify",
+                "room": args.room,
+                "valid": is_valid,
+                "line_count": len(raw_lines),
+                "verification": counts,
+                "anomaly_indices": anomaly_indices,
+            }, indent=2, sort_keys=True))
+        else:
+            print(f"Room: {args.room}")
+            print(f"Valid signatures: {counts['VALID']}")
+            print(f"Invalid signatures: {counts['INVALID']}")
+            print(f"Unsigned records: {counts['UNSIGNED']}")
+            print(f"Malformed records: {counts['MALFORMED']}")
+            print(f"Unsupported key types: {counts['UNSUPPORTED_KEY']}")
 
-
-        return 0
+        return 0 if is_valid else 1
 
     return 2
 

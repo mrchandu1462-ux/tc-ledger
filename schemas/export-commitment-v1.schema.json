@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrchandu1462-ux/tc-ledger/schemas/export-commitment-v1.schema.json",
+  "title": "Export Commitment v1",
+  "description": "JSON Schema for tc-ledger Export Commitment v1 artifacts",
+  "type": "object",
+  "required": [
+    "version",
+    "profile",
+    "room",
+    "line_count",
+    "byte_count",
+    "file_sha256",
+    "export_root",
+    "verification",
+    "anomaly_indices"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Commitment artifact format version"
+    },
+    "profile": {
+      "type": "string",
+      "const": "tc-ledger/1",
+      "description": "Verification profile identifier"
+    },
+    "room": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Technocore room identifier"
+    },
+    "line_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total physical export lines committed"
+    },
+    "byte_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total raw export byte count"
+    },
+    "file_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 digest of exact raw export bytes"
+    },
+    "export_root": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "RFC 6962 export Merkle tree root hash"
+    },
+    "verification": {
+      "type": "object",
+      "description": "Counts of verified line signatures and classifications",
+      "required": [
+        "VALID",
+        "INVALID",
+        "UNSIGNED",
+        "MALFORMED",
+        "UNSUPPORTED_KEY"
+      ],
+      "properties": {
+        "VALID": { "type": "integer", "minimum": 0 },
+        "INVALID": { "type": "integer", "minimum": 0 },
+        "UNSIGNED": { "type": "integer", "minimum": 0 },
+        "MALFORMED": { "type": "integer", "minimum": 0 },
+        "UNSUPPORTED_KEY": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "anomaly_indices": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0 },
+      "description": "0-based indices of physical lines classified as anomalies"
+    },
+    "export_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional conversation epoch / export generation trust anchor"
+    }
+  },
+  "additionalProperties": false
+}

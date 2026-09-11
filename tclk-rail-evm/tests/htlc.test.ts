@@ -610,7 +610,7 @@ describe("EvmHtlcRail integration tests (Anvil local node)", () => {
 
     const refundTs = BigInt(Math.ceil(terms.refundAfterMs / 1000));
     // 1 second before refund deadline
-    await advanceTimeTo(refundTs - 1n);
+    await anvil.setNextBlockTimestamp(refundTs - 1n);
 
     await payeeRail.claim(ref, SECRET_HEX);
     const onChain = await payeeRail.read(ref);
