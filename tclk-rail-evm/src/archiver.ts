@@ -314,6 +314,16 @@ export class TcLedgerCli {
     this.repoRoot = repoRoot ?? path.resolve(process.cwd(), "..");
   }
 
+  private getEnv(): NodeJS.ProcessEnv {
+    const srcDir = path.resolve(this.repoRoot, "src");
+    const existing = process.env.PYTHONPATH;
+    const pythonPath = existing ? `${srcDir}${path.delimiter}${existing}` : srcDir;
+    return {
+      ...process.env,
+      PYTHONPATH: pythonPath,
+    };
+  }
+
   /**
    * Runs `python -m tc_ledger.ledger commit <exportPath> --room <room> --output <outputPath>`
    */
@@ -322,7 +332,7 @@ export class TcLedgerCli {
     const args = ["-m", "tc_ledger.ledger", "commit", exportPath, "--room", room, "--output", tempOut];
 
     try {
-      await execFileAsync(this.pythonPath, args, { cwd: this.repoRoot });
+      await execFileAsync(this.pythonPath, args, { cwd: this.repoRoot, env: this.getEnv() });
       const rawJson = fs.readFileSync(tempOut, "utf8");
       return JSON.parse(rawJson) as TcExportCommitment;
     } finally {
@@ -340,7 +350,7 @@ export class TcLedgerCli {
     const args = ["-m", "tc_ledger.ledger", "prove", exportPath, "--room", room, "--leaf-index", leafIndex.toString(), "--output", tempOut];
 
     try {
-      await execFileAsync(this.pythonPath, args, { cwd: this.repoRoot });
+      await execFileAsync(this.pythonPath, args, { cwd: this.repoRoot, env: this.getEnv() });
       const rawJson = fs.readFileSync(tempOut, "utf8");
       return JSON.parse(rawJson) as TcInclusionProof;
     } finally {
@@ -368,7 +378,7 @@ export class TcLedgerCli {
     ];
 
     try {
-      const { stdout } = await execFileAsync(this.pythonPath, args, { cwd: this.repoRoot });
+      const { stdout } = await execFileAsync(this.pythonPath, args, { cwd: this.repoRoot, env: this.getEnv() });
       return stdout.includes("VERIFY-PROOF: VALID");
     } catch {
       return false;
