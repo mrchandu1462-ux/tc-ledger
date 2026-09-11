@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TC-Ledger Explorer — Explore Independently Verifiable Activity by DID</title>
+  <meta name="description" content="Forensic activity explorer and local evidence verifier for Technocore room exports. Inspect retained chat streams, verify Ed25519 signatures, and check Merkle inclusion proofs.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%2310141d'/><text x='50%' y='55%' dominant-baseline='middle' text-anchor='middle' fill='%2338bdf8' font-size='48' font-family='monospace' font-weight='bold'>TC</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="explorer.css">
+</head>
+<body>
+
+  <!-- Top Synthetic Demo Notice -->
+  <div class="demo-synthetic-banner">
+    DEMO DATA — SYNTHETIC &bull; All identities, rooms, and records in this explorer are synthetic evaluation fixtures. Not production Technocore history.
+  </div>
+
+  <!-- Header / Navigation -->
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="explorer.html" class="brand">
+        <span class="brand-name">TC-Ledger <span class="text-cyan">Explorer</span></span>
+        <span class="badge-version">v0.3.1 — SPEC FROZEN</span>
+      </a>
+      <nav class="nav-links">
+        <a href="index.html">Showcase</a>
+        <a href="#search" class="active">Search DID</a>
+        <a href="#consistency">C7 Consistency</a>
+        <a href="#verify">Verify Evidence</a>
+        <a href="https://github.com/mrchandu1462-ux/tc-ledger" target="_blank" rel="noopener" class="btn-nav">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 4rem;">
+
+    <!-- Navigation Tabs -->
+    <div class="exp-tabs-nav">
+      <button class="exp-tab-btn active" data-tab="view-did-explorer">Explore by DID</button>
+      <button class="exp-tab-btn" data-tab="view-c7-consistency">C7 Consistency Proofs</button>
+      <button class="exp-tab-btn" data-tab="view-self-verify">Verify Evidence Locally</button>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 1: EXPLORE BY DID                                             -->
+    <!-- ================================================================= -->
+    <div id="view-did-explorer" class="exp-view-panel">
+
+      <!-- Hero / Search Section -->
+      <section class="explorer-search-box">
+        <div style="margin-bottom: 1.25rem;">
+          <h1 style="font-size: 1.8rem; margin-bottom: 0.5rem; font-family: var(--font-mono);">TC-Ledger Explorer</h1>
+          <p class="text-secondary" style="font-size: 1.05rem; margin-bottom: 0.5rem;">
+            Explore independently verifiable activity by DID.
+          </p>
+          <p class="text-dim" style="font-size: 0.88rem; margin: 0;">
+            TC-Ledger Explorer demonstrates how retained signed activity can be inspected and cryptographically verified without trusting the explorer itself.
+          </p>
+        </div>
+
+        <div class="search-input-group">
+          <input type="text" id="explorer-did-input" placeholder="did:key:z6Mk..." spellcheck="false" autocomplete="off">
+          <button id="btn-explore" class="btn btn-primary" type="button">Explore</button>
+        </div>
+
+        <div class="quick-pills">
+          <span class="text-dim">Quick Select (Demo Fixtures):</span>
+          <button id="pill-demo-active" class="quick-pill-btn" type="button">🟢 Active: Bob (did:key:z6Mko9...)</button>
+          <button id="pill-demo-stale" class="quick-pill-btn" type="button">⚪ Stale: Alice (did:key:z6Mkon...)</button>
+          <button id="pill-demo-unknown" class="quick-pill-btn" type="button">✕ Unknown DID</button>
+        </div>
+      </section>
+
+      <!-- NO DATA FOUND CONTAINER -->
+      <div id="no-data-container" class="card status-card status-nodata hidden">
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
+          <span class="status-pill status-nodata">NO DATA FOUND</span>
+          <span class="text-dim font-mono" id="no-data-did">did:key:...</span>
+        </div>
+        <p style="margin: 0; font-size: 0.95rem; color: var(--text-primary);">
+          The DID does not exist in the explorer's available indexed dataset. <strong>This does not imply that the DID does not exist.</strong>
+        </p>
+        <p class="text-dim" style="font-size: 0.85rem; margin-top: 0.5rem;">
+          No retained signed exports or cryptographic commitments have been recorded in this demo index for the requested identifier.
+        </p>
+      </div>
+
+      <!-- IDENTITY & STATUS CONTAINER -->
+      <section id="identity-status-container" class="status-card hidden">
+        <div class="status-header-row">
+          <div>
+            <div style="font-size: 0.78rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em; margin-bottom: 0.2rem;">Identity DID</div>
+            <div id="display-did" class="font-mono text-cyan" style="font-size: 1.05rem; word-break: break-all; font-weight: 600;">did:key:...</div>
+          </div>
+          <div style="text-align: right;">
+            <div id="status-badge" class="status-pill status-active">🟢 ACTIVE</div>
+          </div>
+        </div>
+
+        <p id="status-description" class="text-secondary" style="font-size: 0.95rem; margin-bottom: 1.25rem;">
+          Active based on recent verified activity within the demo activity window.
+        </p>
+
+        <!-- Metric Summary Row -->
+        <div class="metrics-row">
+          <div class="metric-box">
+            <div class="metric-box-lbl">Last Verified Activity</div>
+            <div id="meta-last-active" class="metric-box-val" style="font-size: 0.92rem;">—</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-box-lbl">Verified Records</div>
+            <div id="meta-verified-records" class="metric-box-val">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-box-lbl">Indexed Rooms</div>
+            <div id="meta-rooms" class="metric-box-val">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-box-lbl">Latest Generation</div>
+            <div id="meta-generation" class="metric-box-val">1</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-box-lbl">Latest Committed Root</div>
+            <div id="meta-root" class="metric-box-val" style="font-size: 0.9rem;">—</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- AVAILABLE ACTIVITY / ROOM CARDS -->
+      <section id="activity-container" class="hidden" style="margin-top: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
+          <h2 style="font-size: 1.35rem; font-family: var(--font-mono); margin: 0;">Available Activity</h2>
+          <span class="text-dim" style="font-size: 0.85rem;">Retained Room Exports</span>
+        </div>
+
+        <div id="room-cards-grid" class="rooms-grid">
+          <!-- Dynamically populated via explorer.js -->
+        </div>
+      </section>
+
+      <!-- ROOM / CHAT VIEW -->
+      <section id="room-view-container" class="room-chat-panel hidden">
+        <div class="room-chat-header">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+            <div>
+              <h2 id="chat-room-title" style="font-size: 1.4rem; font-family: var(--font-mono); color: var(--accent-cyan); margin-bottom: 0.25rem;">#research Activity</h2>
+              <p id="chat-room-desc" class="text-dim" style="font-size: 0.88rem; margin: 0;">Retained conversation records.</p>
+            </div>
+            <div class="text-dim font-mono" style="font-size: 0.82rem; text-align: right;">
+              <div>Generation: <strong id="chat-room-gen" class="text-primary">2</strong> &bull; Records: <strong id="chat-room-count" class="text-primary">6</strong></div>
+              <div>Root: <code id="chat-room-root" class="text-cyan">—</code></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Message Log -->
+        <div id="chat-messages-list" class="chat-messages-container">
+          <!-- Dynamically populated via explorer.js -->
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 2: C7 CONSISTENCY PROOFS                                      -->
+    <!-- ================================================================= -->
+    <div id="view-c7-consistency" class="exp-view-panel hidden">
+      <div class="c7-panel">
+        <div class="section-header" style="text-align: left; margin-bottom: 1.5rem;">
+          <span class="section-tag">Cross-Generation Proof Engine</span>
+          <h2 class="section-title" style="font-size: 1.75rem;">C7 Consistency Experience</h2>
+          <p class="section-desc" style="max-width: 100%;">
+            C7 proves consistency between two roots when the newer tree contains the earlier tree as an exact prefix. It does not provide an external witness or prevent divergent histories by itself.
+          </p>
+        </div>
+
+        <div class="grid grid-2" style="gap: 1.5rem; margin-bottom: 2rem;">
+          <!-- Case 1: Consistent Extension -->
+          <div class="card card-outline" style="border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.03);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+              <span class="status-pill status-active">✓ CONSISTENT</span>
+              <span class="text-dim font-mono" style="font-size: 0.8rem;">Gen 1 (size 4) &rarr; Gen 2 (size 6)</span>
+            </div>
+            <div class="raw-code-box" style="margin-bottom: 1rem;">
+Generation 1 Root (size 4):
+0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9
+          &darr;
+Generation 2 Root (size 6):
+792e762d74456dab8b4905490213491d6d4533a10f333da7447c2541bb81d341
+            </div>
+            <p style="font-size: 0.92rem; line-height: 1.5; color: var(--text-primary);">
+              <strong>"New tree is an exact-prefix extension of the earlier tree."</strong><br>
+              The RFC 6962 consistency proof (1 intermediate node: <code>b146097a...</code>) mathematically establishes that all 4 records from Generation 1 exist unaltered in Generation 2.
+            </p>
+          </div>
+
+          <!-- Case 2: Consistency Not Established -->
+          <div class="card card-outline" style="border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.03);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+              <span class="status-pill status-nodata">✕ CONSISTENCY NOT ESTABLISHED</span>
+              <span class="text-dim font-mono" style="font-size: 0.8rem;">Gen 2 (size 6) &rarr; Gen 3 (evicted)</span>
+            </div>
+            <div class="raw-code-box" style="margin-bottom: 1rem;">
+Generation 2 Root (size 6):
+792e762d74456dab8b4905490213491d6d4533a10f333da7447c2541bb81d341
+          &darr; (Record 0 pruned by server log retention)
+Generation 3 Root (size 5):
+e8a1f2b3... [Not an extension of Gen 2]
+            </div>
+            <p style="font-size: 0.92rem; line-height: 1.5; color: var(--text-primary);">
+              <strong>"The newer export is not an exact-prefix extension of the earlier export."</strong><br>
+              Eviction can destroy the retained bytes needed to independently verify earlier records. C7 therefore fails when the newer export is no longer an exact prefix of the earlier export.
+            </p>
+          </div>
+        </div>
+
+        <div class="trust-boundary-banner" style="margin-bottom: 0;">
+          <div class="trust-banner-badge">Trust Boundary: C7 Consistency Guarantees</div>
+          <p class="trust-banner-text">
+            C7 verifies that an export is an append-only extension of an earlier known root. It does not prove that a server maintained continuous room history if earlier records were pruned prior to export creation.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 3: VERIFY EVIDENCE LOCALLY (SELF-VERIFICATION)                -->
+    <!-- ================================================================= -->
+    <div id="view-self-verify" class="exp-view-panel hidden">
+      <div class="self-verify-panel">
+        <div class="section-header" style="text-align: left; margin-bottom: 1.5rem;">
+          <span class="section-tag">Client-Side Engine</span>
+          <h2 class="section-title" style="font-size: 1.75rem;">Verify Evidence Locally</h2>
+          <p class="section-desc" style="max-width: 100%;">
+            Run local, offline WebCrypto verification on raw JSONL export lines and inclusion proof artifacts directly in your browser.
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label for="self-verify-record">1. Raw JSONL Export Record Line (with trailing newline):</label>
+          <textarea id="self-verify-record" rows="4" spellcheck="false">{"seq":2,"ts":"2026-09-01T12:02:00.000000Z","from":"did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH","text":"Bob verified session terms","nonce":1002,"sig":"juuohrJ_zJ5oh5hscm5mXK8MykhGVWmKCMMU5cXJC0QrCx3UhanSjuCYOVwghQenfaDwmEWYllHh0cJM9KP7Cw"}&#10;</textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="self-verify-proof">2. Inclusion Proof Artifact (JSON):</label>
+          <textarea id="self-verify-proof" rows="7" spellcheck="false">{
+  "schema": "tc-ledger/inclusion-proof/v1",
+  "version": 1,
+  "room": "demo-room",
+  "generation": 1,
+  "tree_size": 4,
+  "leaf_index": 1,
+  "leaf_hash": "13dbfe722146b058fe8a560b87ac56be426fc785f907fa061121bd5743d21149",
+  "expected_root": "0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9",
+  "audit_path": [
+    { "position": "left", "sibling_hash": "589528377029dc2f622020f4df8f141305d6289ac7c68dcae2ffa66bdaa401b6" },
+    { "position": "right", "sibling_hash": "18972fda6f31cf89c8de7601ba9fe37dafa87581e8fb0f0195cce7a4be52d9a8" }
+  ]
+}</textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="self-verify-root">3. Expected Merkle Root (Optional — defaults to proof expected_root):</label>
+          <input type="text" id="self-verify-root" placeholder="0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9">
+        </div>
+
+        <button id="btn-run-self-verify" class="btn btn-primary" type="button">Run Independent Local Verification</button>
+
+        <div id="self-verify-output" class="hidden">
+          <!-- Result rendered by explorer.js -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Universal Trust Boundary Banner -->
+    <div class="trust-boundary-banner" style="margin-top: 3rem;">
+      <div class="trust-banner-badge">Cryptographic Trust Boundary</div>
+      <p class="trust-banner-text">
+        Verification is conditional on trusted inputs. TC-Ledger verifies retained evidence against a root you already hold. The explorer does not establish the provenance of that root, authenticate envelope metadata, or provide trusted timestamping by itself.
+      </p>
+      <p class="text-dim" style="font-size: 0.86rem; margin-top: 0.5rem;">
+        Retained activity is not guaranteed to represent complete lifetime history. Retention/eviction can remove the original bytes required for independent verification.
+      </p>
+    </div>
+
+  </main>
+
+  <!-- ================================================================= -->
+  <!-- RECORD DETAIL & FORENSIC PROOF MODAL                              -->
+  <!-- ================================================================= -->
+  <div id="record-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">Record Forensic Inspector &bull; Seq #<span id="modal-seq">1</span></div>
+        <button id="modal-close-btn" class="modal-close">&times;</button>
+      </div>
+
+      <table class="forensic-table">
+        <tbody>
+          <tr>
+            <th>Room &amp; Sequence</th>
+            <td><code id="modal-room">demo-room</code> &bull; Seq <strong id="modal-seq">1</strong> &bull; Nonce <code id="modal-nonce">1002</code></td>
+          </tr>
+          <tr>
+            <th>Timestamp</th>
+            <td id="modal-ts">—</td>
+          </tr>
+          <tr>
+            <th>Signer DID</th>
+            <td id="modal-sender" class="text-cyan font-bold">—</td>
+          </tr>
+          <tr>
+            <th>Message Text</th>
+            <td id="modal-text" style="color: #f1f5f9; font-weight: 500;">—</td>
+          </tr>
+          <tr>
+            <th>Ed25519 Signature</th>
+            <td id="modal-v-sig" class="text-green">✓ VALID</td>
+          </tr>
+          <tr>
+            <th>JCS Evidence ID</th>
+            <td id="modal-v-evidence-id" class="text-cyan">—</td>
+          </tr>
+          <tr>
+            <th>RFC 6962 Leaf Hash</th>
+            <td id="modal-v-leaf-hash">—</td>
+          </tr>
+          <tr>
+            <th>Merkle Inclusion</th>
+            <td id="modal-v-inclusion" class="text-green">✓ VALID</td>
+          </tr>
+          <tr>
+            <th>Committed Root</th>
+            <td id="modal-v-root" class="text-dim">—</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style="margin-bottom: 0.75rem;">
+        <label style="font-size: 0.78rem; text-transform: uppercase; color: var(--text-dim); font-weight: 600; display: block; margin-bottom: 0.3rem;">Raw Exact Signed Export Line:</label>
+        <div id="modal-raw-line" class="raw-code-box"></div>
+      </div>
+
+      <pre id="modal-proof-json" class="raw-code-box hidden" style="max-height: 200px; color: #38bdf8;"></pre>
+
+      <div class="modal-actions">
+        <button id="btn-view-proof-json" class="btn btn-sm btn-secondary" type="button">Toggle Proof JSON</button>
+        <button id="btn-download-proof" class="btn btn-sm btn-primary" type="button">Download Proof (.json)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-container">
+      <div class="footer-bottom" style="text-align: center;">
+        <p>&copy; 2026 TC-Ledger Authors. Released under the Apache-2.0 License.</p>
+        <p class="footer-affiliation-disclaimer text-dim">
+          TC-Ledger is an independent project and is not affiliated with, endorsed by, or reviewed by Technocore.
+        </p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="explorer.js"></script>
+</body>
+</html>
