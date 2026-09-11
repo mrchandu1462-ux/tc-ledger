@@ -167,6 +167,15 @@ async function verifyRecordSignature(recordObj, room) {
 const DEMO_DID_ACTIVE = "did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH";
 const DEMO_DID_STALE = "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaiSS28H";
 const DEMO_DID_UNKNOWN = "did:key:z6MkuUnknownIdentityNotInIndexedDemoDataset9999";
+// -----------------------------------------------------------------------------
+// Live Technocore Public Data Adapter Constants & State
+// -----------------------------------------------------------------------------
+
+const LIVE_DID_ACTIVE = "did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z";
+const LIVE_DID_NONEXISTENT = "did:key:z6MkmVLivcEneu3HGgGLkQBZvkZeZEMihRKzdWq9vk5DYGmR";
+const LIVE_ROOMS_DATA = {};
+let currentExplorerMode = "synthetic"; // "synthetic" | "live"
+
 
 // Retained records corresponding to genuine v0.3.1 fixtures
 const SYNTHETIC_ROOMS_DATA = {
@@ -401,6 +410,219 @@ function lookupDid(did) {
 }
 
 // -----------------------------------------------------------------------------
+// Live Adapter: Ingest Live Indexer JSON or Query Endpoints
+// -----------------------------------------------------------------------------
+
+function adaptIndexerJsonToExplorer(data) {
+  const isLiveActive = data.status === "ACTIVE";
+  const isStale = data.status === "STALE";
+  const isNoData = data.status === "NO DATA" || data.status === "NO_DATA";
+  const roomsList = [];
+
+  if (data.room_details) {
+    Object.keys(data.room_details).forEach(rName => {
+      const act = data.room_details[rName];
+      const roomId = `live-${rName}`;
+      const recs = (act.records || []).map(r => ({
+        seq: r.seq,
+        ts: r.ts,
+        from: r.from || r.from_did,
+        text: r.text,
+        nonce: r.nonce,
+        sig: r.sig,
+        rawLine: r.rawLine || (JSON.stringify(r) + "\n")
+      }));
+
+      roomsList.push({
+        id: roomId,
+        rawRoomName: rName,
+        name: rName,
+        retainedRecords: act.verified_record_count || recs.length || 0,
+        lastActivity: act.latest_timestamp || "N/A",
+        verifiedStatus: "Verified",
+        generation: (act.generation !== null && act.generation !== undefined) ? act.generation : "N/A",
+        committedRoot: `X-Room-Gen: ${(act.generation !== null && act.generation !== undefined) ? act.generation : "N/A"}`
+      });
+
+      LIVE_ROOMS_DATA[roomId] = {
+        name: rName,
+        displayName: `#${rName}`,
+        description: `Live retained records for ${data.did} in #${rName}.`,
+        committedRoot: `X-Room-Gen: ${act.generation}`,
+        messages: recs
+      };
+    });
+  }
+
+  return {
+    status: isNoData ? "NO_DATA" : data.status,
+    statusLabel: isLiveActive ? "ACTIVE" : (isStale ? "STALE / INACTIVE" : "NO DATA FOUND"),
+    statusDescription: isLiveActive
+      ? "Recent verified activity exists within the 24-hour indexer activity window."
+      : (isStale
+          ? "Known verified retained activity exists, but none falls within the 24-hour activity window."
+          : "No matching verified retained activity was found in the inspected public data. This does not imply that the DID does not exist."),
+    did: data.did,
+    persona: "Live Verified Identity",
+    lastActivity: data.latest_verified_activity || "N/A",
+    verifiedRecords: data.verified_records || 0,
+    totalRetainedRecords: data.verified_records || 0,
+    roomCount: roomsList.length,
+    latestGeneration: roomsList.length > 0 ? roomsList[0].generation : "N/A",
+    latestCommittedRoot: "Currently Retained Public Activity",
+    rooms: roomsList,
+    retentionNotice: data.retention_notice || "CURRENTLY RETAINED PUBLIC ACTIVITY: Results reflect records currently retained in inspected public room exports. No claim of complete lifetime history.",
+    isLive: true
+  };
+}
+
+async function lookupLiveDid(did) {
+  const cleanDid = (did || "").trim();
+  if (!cleanDid) {
+    throw new Error("DID cannot be empty");
+  }
+
+  // 1. First attempt: Query local adapter server if running
+  const localAdapterUrl = `http://127.0.0.1:8088/api/index?did=${encodeURIComponent(cleanDid)}`;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1800);
+    const resp = await fetch(localAdapterUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (resp.ok) {
+      const data = await resp.json();
+      return adaptIndexerJsonToExplorer(data);
+    }
+  } catch (e) {
+    // Local adapter not running; proceed to direct Technocore public CORS read
+  }
+
+  // 2. Direct Technocore public read endpoints (which support CORS access-control-allow-origin: *)
+  const seedRooms = ["tclk-offers", "lobby"];
+  const matchedRecords = [];
+  const roomDetails = {};
+  let roomsAttempted = 0;
+  let roomsSucceeded = 0;
+
+  for (const room of seedRooms) {
+    roomsAttempted++;
+    const exportUrl = `https://technocore.chat/r/${encodeURIComponent(room)}/export`;
+    try {
+      const res = await fetch(exportUrl);
+      if (!res.ok) continue;
+      roomsSucceeded++;
+      const genHeader = res.headers.get("x-room-generation");
+      const generation = genHeader ? parseInt(genHeader, 10) : null;
+      const text = await res.text();
+      const lines = text.split("\n");
+      const roomMatches = [];
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let item;
+        try {
+          item = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (item && item.from === cleanDid) {
+          const v = await verifyRecordSignature(item, room);
+          if (v.valid) {
+            item.rawLine = line + "\n";
+            item.status = "VALID";
+            item.room = room;
+            roomMatches.push(item);
+            matchedRecords.push(item);
+          }
+        }
+      }
+
+      if (roomMatches.length > 0) {
+        roomDetails[room] = {
+          room,
+          generation,
+          verifiedRecords: roomMatches,
+          verifiedCount: roomMatches.length,
+          latestSeq: Math.max(...roomMatches.map(m => m.seq || 0)),
+          latestTs: roomMatches[roomMatches.length - 1].ts
+        };
+      }
+    } catch (e) {
+      // Room read error
+    }
+  }
+
+  if (roomsSucceeded === 0) {
+    throw new Error("Could not connect to Technocore public endpoints. Start the local indexer adapter (python tools/tc_indexer_server.py) or check internet connectivity.");
+  }
+
+  if (matchedRecords.length === 0) {
+    return {
+      status: "NO_DATA",
+      statusLabel: "NO DATA FOUND",
+      statusDescription: "No matching verified retained activity was found in the inspected public rooms for this DID. This does not imply that the DID does not exist.",
+      did: cleanDid,
+      persona: "Live Verified Identity",
+      lastActivity: "NONE",
+      verifiedRecords: 0,
+      totalRetainedRecords: 0,
+      roomCount: 0,
+      latestGeneration: "N/A",
+      latestCommittedRoot: "N/A",
+      rooms: [],
+      retentionNotice: "CURRENTLY RETAINED PUBLIC ACTIVITY: Results reflect records currently retained in inspected public room exports. No claim of complete lifetime history.",
+      isLive: true
+    };
+  }
+
+  const sortedTs = matchedRecords.map(r => new Date(r.ts).getTime()).filter(t => !isNaN(t)).sort((a, b) => a - b);
+  const latestMs = sortedTs[sortedTs.length - 1];
+  const ageHours = (Date.now() - latestMs) / (1000 * 60 * 60);
+  const isActive = ageHours <= 24.0;
+
+  const roomsList = Object.keys(roomDetails).map(rName => {
+    const act = roomDetails[rName];
+    const roomId = `live-${rName}`;
+    LIVE_ROOMS_DATA[roomId] = {
+      name: rName,
+      displayName: `#${rName}`,
+      description: `Live retained records for ${cleanDid} in #${rName} (Generation ${act.generation}).`,
+      committedRoot: `X-Room-Gen: ${act.generation}`,
+      messages: act.verifiedRecords
+    };
+    return {
+      id: roomId,
+      rawRoomName: rName,
+      name: rName,
+      retainedRecords: act.verifiedCount,
+      lastActivity: act.latestTs,
+      verifiedStatus: "Verified",
+      generation: act.generation !== null ? act.generation : "N/A",
+      committedRoot: `X-Room-Gen: ${act.generation !== null ? act.generation : "N/A"}`
+    };
+  });
+
+  return {
+    status: isActive ? "ACTIVE" : "STALE",
+    statusLabel: isActive ? "ACTIVE" : "STALE / INACTIVE",
+    statusDescription: isActive
+      ? "Recent verified activity exists within the 24-hour indexer activity window."
+      : "Known verified retained activity exists, but none falls within the 24-hour activity window.",
+    did: cleanDid,
+    persona: "Live Verified Identity",
+    lastActivity: new Date(latestMs).toISOString(),
+    verifiedRecords: matchedRecords.length,
+    totalRetainedRecords: matchedRecords.length,
+    roomCount: roomsList.length,
+    latestGeneration: Object.values(roomDetails)[0]?.generation ?? "N/A",
+    latestCommittedRoot: "Currently Retained Public Activity",
+    rooms: roomsList,
+    retentionNotice: "CURRENTLY RETAINED PUBLIC ACTIVITY: Results reflect records currently retained in inspected public room exports. No claim of complete lifetime history.",
+    isLive: true
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Interactive Verification Service
 // -----------------------------------------------------------------------------
 
@@ -460,19 +682,105 @@ let currentDidData = null;
 let currentRoomId = null;
 let currentSelectedRecord = null;
 
+function setExplorerMode(mode) {
+  currentExplorerMode = mode;
+  const btnSynth = document.getElementById("btn-mode-synthetic");
+  const btnLive = document.getElementById("btn-mode-live");
+  const badge = document.getElementById("mode-source-badge");
+  const pillsSynth = document.getElementById("pills-synthetic");
+  const pillsLive = document.getElementById("pills-live");
+  const topBanner = document.getElementById("top-mode-banner");
+  const didInput = document.getElementById("explorer-did-input");
+
+  if (btnSynth) btnSynth.classList.toggle("active", mode === "synthetic");
+  if (btnLive) btnLive.classList.toggle("active", mode === "live");
+
+  if (mode === "live") {
+    if (badge) {
+      badge.textContent = "MODE: LIVE TECHNOCORE";
+      badge.style.color = "var(--accent-cyan)";
+    }
+    if (pillsSynth) pillsSynth.classList.add("hidden");
+    if (pillsLive) pillsLive.classList.remove("hidden");
+    if (topBanner) {
+      topBanner.className = "demo-live-banner";
+      topBanner.innerHTML = "LIVE DATA — CURRENTLY RETAINED PUBLIC ACTIVITY &bull; Connected to Technocore public read endpoints. Results represent currently retained activity only. Message content is UNTRUSTED DATA.";
+    }
+    if (didInput) {
+      didInput.value = LIVE_DID_ACTIVE;
+    }
+  } else {
+    if (badge) {
+      badge.textContent = "MODE: DEMO FIXTURES";
+      badge.style.color = "var(--text-dim)";
+    }
+    if (pillsSynth) pillsSynth.classList.remove("hidden");
+    if (pillsLive) pillsLive.classList.add("hidden");
+    if (topBanner) {
+      topBanner.className = "demo-synthetic-banner";
+      topBanner.innerHTML = "DEMO DATA — SYNTHETIC &bull; All identities, rooms, and records in this explorer are synthetic evaluation fixtures. Not production Technocore history.";
+    }
+    if (didInput) {
+      didInput.value = DEMO_DID_ACTIVE;
+    }
+  }
+
+  const errBox = document.getElementById("live-error-container");
+  if (errBox) errBox.classList.add("hidden");
+  const loadBox = document.getElementById("loading-container");
+  if (loadBox) loadBox.classList.add("hidden");
+
+  runExplore();
+}
+
 function setupUI() {
   if (typeof document === "undefined") return;
 
   const didInput = document.getElementById("explorer-did-input");
   const btnExplore = document.getElementById("btn-explore");
+
+  // Mode toggles
+  const btnModeSynthetic = document.getElementById("btn-mode-synthetic");
+  const btnModeLive = document.getElementById("btn-mode-live");
+  if (btnModeSynthetic) btnModeSynthetic.addEventListener("click", () => setExplorerMode("synthetic"));
+  if (btnModeLive) btnModeLive.addEventListener("click", () => setExplorerMode("live"));
+
+  // Quick select pills (Demo)
   const pillActive = document.getElementById("pill-demo-active");
   const pillStale = document.getElementById("pill-demo-stale");
   const pillUnknown = document.getElementById("pill-demo-unknown");
-
-  // Quick select pills
   if (pillActive) pillActive.addEventListener("click", () => { didInput.value = DEMO_DID_ACTIVE; runExplore(); });
   if (pillStale) pillStale.addEventListener("click", () => { didInput.value = DEMO_DID_STALE; runExplore(); });
   if (pillUnknown) pillUnknown.addEventListener("click", () => { didInput.value = DEMO_DID_UNKNOWN; runExplore(); });
+
+  // Quick select pills (Live)
+  const pillLiveActive = document.getElementById("pill-live-active");
+  const pillLiveNonexistent = document.getElementById("pill-live-nonexistent");
+  const pillLoadJson = document.getElementById("pill-load-json");
+  const fileIndexerJson = document.getElementById("file-indexer-json");
+
+  if (pillLiveActive) pillLiveActive.addEventListener("click", () => { didInput.value = LIVE_DID_ACTIVE; runExplore(); });
+  if (pillLiveNonexistent) pillLiveNonexistent.addEventListener("click", () => { didInput.value = LIVE_DID_NONEXISTENT; runExplore(); });
+  if (pillLoadJson && fileIndexerJson) {
+    pillLoadJson.addEventListener("click", () => fileIndexerJson.click());
+    fileIndexerJson.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const parsed = JSON.parse(evt.target.result);
+          const adapted = adaptIndexerJsonToExplorer(parsed);
+          currentDidData = adapted;
+          if (didInput) didInput.value = adapted.did || "";
+          renderExplorerResult(adapted);
+        } catch (err) {
+          alert("Invalid indexer JSON file: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+  }
 
   if (btnExplore) {
     btnExplore.addEventListener("click", runExplore);
@@ -521,18 +829,56 @@ function setupUI() {
   }
 }
 
-function runExplore() {
+async function runExplore() {
   const didInput = document.getElementById("explorer-did-input");
   if (!didInput) return;
   const did = didInput.value.trim();
-  const res = lookupDid(did);
-  currentDidData = res;
 
-  // Render Status
   const statusContainer = document.getElementById("identity-status-container");
   const noDataContainer = document.getElementById("no-data-container");
   const activityContainer = document.getElementById("activity-container");
   const roomViewContainer = document.getElementById("room-view-container");
+  const loadingContainer = document.getElementById("loading-container");
+  const liveErrorContainer = document.getElementById("live-error-container");
+
+  if (roomViewContainer) roomViewContainer.classList.add("hidden");
+  if (liveErrorContainer) liveErrorContainer.classList.add("hidden");
+
+  let res;
+  if (currentExplorerMode === "live") {
+    if (loadingContainer) loadingContainer.classList.remove("hidden");
+    if (statusContainer) statusContainer.classList.add("hidden");
+    if (noDataContainer) noDataContainer.classList.add("hidden");
+    if (activityContainer) activityContainer.classList.add("hidden");
+
+    try {
+      res = await lookupLiveDid(did);
+    } catch (err) {
+      if (loadingContainer) loadingContainer.classList.add("hidden");
+      if (liveErrorContainer) {
+        liveErrorContainer.classList.remove("hidden");
+        const msgEl = document.getElementById("live-error-message");
+        if (msgEl) msgEl.textContent = err.message || "Failed to resolve live activity.";
+      }
+      return;
+    } finally {
+      if (loadingContainer) loadingContainer.classList.add("hidden");
+    }
+  } else {
+    res = lookupDid(did);
+  }
+
+  currentDidData = res;
+  renderExplorerResult(res);
+}
+
+function renderExplorerResult(res) {
+  const statusContainer = document.getElementById("identity-status-container");
+  const noDataContainer = document.getElementById("no-data-container");
+  const activityContainer = document.getElementById("activity-container");
+  const roomViewContainer = document.getElementById("room-view-container");
+  const retentionBanner = document.getElementById("retention-notice-banner");
+
   if (roomViewContainer) roomViewContainer.classList.add("hidden");
 
   if (res.status === "NO_DATA") {
@@ -540,7 +886,7 @@ function runExplore() {
     if (activityContainer) activityContainer.classList.add("hidden");
     if (noDataContainer) {
       noDataContainer.classList.remove("hidden");
-      document.getElementById("no-data-did").textContent = did || "N/A";
+      document.getElementById("no-data-did").textContent = res.did || "N/A";
     }
     return;
   }
@@ -548,6 +894,16 @@ function runExplore() {
   if (noDataContainer) noDataContainer.classList.add("hidden");
   if (statusContainer) statusContainer.classList.remove("hidden");
   if (activityContainer) activityContainer.classList.remove("hidden");
+
+  // Retention banner
+  if (retentionBanner) {
+    if (res.retentionNotice) {
+      retentionBanner.textContent = res.retentionNotice;
+      retentionBanner.classList.remove("hidden");
+    } else {
+      retentionBanner.classList.add("hidden");
+    }
+  }
 
   // Update Status Banner
   const statusBadge = document.getElementById("status-badge");
@@ -565,8 +921,9 @@ function runExplore() {
   metaVerified.textContent = res.verifiedRecords;
   metaRooms.textContent = res.roomCount;
   metaGeneration.textContent = res.latestGeneration;
-  metaRoot.textContent = res.latestCommittedRoot.length > 20 ? res.latestCommittedRoot.substring(0, 16) + "..." : res.latestCommittedRoot;
-  metaRoot.title = res.latestCommittedRoot;
+  const rootStr = res.latestCommittedRoot || "N/A";
+  metaRoot.textContent = rootStr.length > 20 ? rootStr.substring(0, 16) + "..." : rootStr;
+  metaRoot.title = rootStr;
 
   if (res.status === "ACTIVE") {
     statusBadge.textContent = "🟢 ACTIVE";
@@ -607,7 +964,7 @@ function renderRoomCards(rooms) {
 
 function openRoom(roomId) {
   currentRoomId = roomId;
-  const roomData = SYNTHETIC_ROOMS_DATA[roomId];
+  const roomData = (currentExplorerMode === "live" ? LIVE_ROOMS_DATA[roomId] : SYNTHETIC_ROOMS_DATA[roomId]) || SYNTHETIC_ROOMS_DATA[roomId] || LIVE_ROOMS_DATA[roomId];
   if (!roomData) return;
 
   const roomView = document.getElementById("room-view-container");
@@ -832,14 +1189,21 @@ if (typeof module !== "undefined" && module.exports) {
     DEMO_DID_ACTIVE,
     DEMO_DID_STALE,
     DEMO_DID_UNKNOWN,
+    LIVE_DID_ACTIVE,
+    LIVE_DID_NONEXISTENT,
     SYNTHETIC_ROOMS_DATA,
+    LIVE_ROOMS_DATA,
     lookupDid,
+    lookupLiveDid,
+    adaptIndexerJsonToExplorer,
+    setExplorerMode,
     computeLeafHash,
     computeNodeHash,
     computeEvidenceId,
     verifyRecordSignature,
     verifyRecordDetails,
     extractEd25519PubKey,
-    decodeBase58
+    decodeBase58,
+    escapeHtml
   };
 }
