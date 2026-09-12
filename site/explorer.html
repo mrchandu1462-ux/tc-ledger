@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://technocore.chat http://127.0.0.1:8088;">
   <title>TC Verify Explorer — Independent Verification for Technocore Activity</title>
   <meta name="description" content="Forensic activity explorer and local evidence verifier for Technocore room exports. Inspect retained chat streams, verify Ed25519 signatures, and check Merkle inclusion proofs.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%2310141d'/><text x='50%' y='55%' dominant-baseline='middle' text-anchor='middle' fill='%2338bdf8' font-size='48' font-family='monospace' font-weight='bold'>TC</text></svg>">
@@ -162,6 +163,14 @@
             <div id="meta-verified-records" class="metric-box-val">0</div>
           </div>
           <div class="metric-box">
+            <div class="metric-box-lbl">Unsigned Records</div>
+            <div id="meta-unsigned-records" class="metric-box-val">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-box-lbl">Invalid Signatures</div>
+            <div id="meta-invalid-records" class="metric-box-val">0</div>
+          </div>
+          <div class="metric-box">
             <div class="metric-box-lbl">Indexed Rooms</div>
             <div id="meta-rooms" class="metric-box-val">0</div>
           </div>
@@ -174,8 +183,23 @@
             <div id="meta-root" class="metric-box-val" style="font-size: 0.9rem;">—</div>
           </div>
         </div>
+
+        <!-- Bounded Discovery Scope & Direct Request Notice -->
+        <div id="scope-notice-container" class="scope-notice-card" style="margin-top: 1rem; padding: 0.85rem 1.15rem; background: rgba(14, 165, 233, 0.04); border: 1px solid rgba(14, 165, 233, 0.18); border-radius: 6px; font-size: 0.86rem; line-height: 1.5;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.35rem;">
+            <span style="font-weight: 600; color: var(--color-cyan, #38bdf8); text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.05em;">Bounded Discovery Scope</span>
+            <span id="meta-last-checked" class="text-dim font-mono" style="font-size: 0.78rem;"></span>
+          </div>
+          <p id="meta-scope-details" style="margin: 0 0 0.35rem 0; color: var(--text-secondary);">
+            Checked 2 indexed public rooms: #tclk-offers, #lobby.
+          </p>
+          <p style="margin: 0; color: var(--text-dim); font-size: 0.8rem;">
+            Live mode contacts Technocore directly from your browser. TC Verify does not proxy or modify these read requests. Bounded discovery does not guarantee complete lifetime history or unindexed namespace discovery. Evicted records are unavailable; NO DATA FOUND does not imply identity non-existence.
+          </p>
+        </div>
+
         <!-- Retention Notice Banner -->
-        <div id="retention-notice-banner" class="retention-banner hidden">
+        <div id="retention-notice-banner" class="retention-banner hidden" style="margin-top: 0.85rem;">
           <strong>CURRENTLY RETAINED PUBLIC ACTIVITY:</strong> This result reflects records currently retained in inspected public room exports. It does not claim complete lifetime history.
         </div>
       </section>
@@ -259,7 +283,8 @@ Generation 2 Root (size 6):
 792e762d74456dab8b4905490213491d6d4533a10f333da7447c2541bb81d341
           &darr; (Record 0 pruned by server log retention)
 Generation 3 Root (size 5):
-e8a1f2b3... [Not an extension of Gen 2]
+7ebca73b8b8f284493fdcbb16e9f03f615d85b9adc0d5ae018af46ba660e6573
+[RFC 6962 computed root of records 1..5; not an exact-prefix extension of Gen 2]
             </div>
             <p style="font-size: 0.92rem; line-height: 1.5; color: var(--text-primary);">
               <strong>"The newer export is not an exact-prefix extension of the earlier export."</strong><br>

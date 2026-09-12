@@ -292,10 +292,12 @@ Completed:
 - multi-step inclusion proof vector
 - sibling position semantics
 
-Pending:
+Shipped (v0.2.0 - v0.4.0):
 
-- Merkle tree implementation
-- inclusion proof generation
-- inclusion proof verification
-- Merkle integration with the export verifier
-- anchor layer
+- Merkle tree implementation (`export_merkle_root`, `export_leaf_hash`, `export_node_hash`)
+- Inclusion proof generation (`build_inclusion_proof_artifact`, `export_merkle_proof`)
+- Inclusion proof verification (`verify_export_inclusion_proof`, `verify_proof` CLI, browser verifier)
+- RFC 6962 consistency proofs (`consistency_proof`, `verify_consistency_proof`, C7)
+- Merkle integration with export and live verifiers
+
+Historical context: External anchor/settlement layer (e.g. EVM rails) is specified and tested separately in the `tclk-rail-evm` package.

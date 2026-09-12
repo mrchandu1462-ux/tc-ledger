@@ -42,6 +42,83 @@ function getCryptoSubtle() {
   throw new Error("WebCrypto subtle API is not available.");
 }
 
+// Base58btc decoder for did:key:z6Mk...
+const B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function decodeBase58(str) {
+  const bytes = [0];
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    const val = B58_ALPHABET.indexOf(char);
+    if (val === -1) throw new Error("Invalid base58 character: " + char);
+    for (let j = 0; j < bytes.length; j++) bytes[j] *= 58;
+    bytes[0] += val;
+    let carry = 0;
+    for (let j = 0; j < bytes.length; j++) {
+      bytes[j] += carry;
+      carry = bytes[j] >> 8;
+      bytes[j] &= 0xff;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  for (let i = 0; i < str.length && str[i] === "1"; i++) {
+    bytes.push(0);
+  }
+  return new Uint8Array(bytes.reverse());
+}
+
+function extractEd25519PubKey(did) {
+  if (!did || !did.startsWith("did:key:z")) {
+    throw new Error("Invalid did:key prefix");
+  }
+  const multibase = did.substring(9);
+  const decoded = decodeBase58(multibase);
+  if (decoded.length < 34 || decoded[0] !== 0xed || decoded[1] !== 0x01) {
+    throw new Error("Unsupported multicodec prefix (expected ed01 for Ed25519)");
+  }
+  return decoded.slice(2, 34);
+}
+
+function base64UrlToBytes(str) {
+  const stripped = str.replace(/=+$/, "");
+  const base64 = stripped.replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (base64.length % 4)) % 4;
+  const padded = base64 + "=".repeat(padLen);
+  if (typeof atob === "function") {
+    const bin = atob(padded);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  if (typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(padded, "base64"));
+  }
+  throw new Error("No base64 decoder available");
+}
+
+async function verifyRecordSignature(recordObj, room) {
+  try {
+    if (!recordObj || !recordObj.from || !recordObj.sig || recordObj.nonce === undefined || !recordObj.text) {
+      return { valid: false, reason: "Missing required signature fields" };
+    }
+    const pubKeyBytes = extractEd25519PubKey(recordObj.from);
+    const sigBytes = base64UrlToBytes(recordObj.sig);
+    if (sigBytes.length !== 64) {
+      return { valid: false, reason: "Invalid signature length (expected 64 bytes)" };
+    }
+    const canonicalMsg = new TextEncoder().encode(`${room}|${recordObj.nonce}|${recordObj.text}`);
+    const subtle = getCryptoSubtle();
+    const key = await subtle.importKey("raw", pubKeyBytes, { name: "Ed25519" }, false, ["verify"]);
+    const ok = await subtle.verify({ name: "Ed25519" }, key, sigBytes, canonicalMsg);
+    return { valid: ok, reason: ok ? "Valid Ed25519 signature" : "Signature check failed" };
+  } catch (e) {
+    return { valid: false, reason: "Ed25519 verification unavailable in this browser." };
+  }
+}
+
+
 // RFC 6962 Leaf Hash: SHA-256(0x00 || data)
 async function computeLeafHash(dataBytes) {
   const prefixed = new Uint8Array(1 + dataBytes.length);
@@ -100,8 +177,14 @@ async function runVerification() {
     document.getElementById("record-nonce").textContent = "N/A";
   }
 
-  // 1. Signature Format Check (strict 86 chars canonical base64url)
-  const sigValid = isJsonValid && typeof parsed.sig === "string" && /^[A-Za-z0-9_-]{86}(?:==)?$/.test(parsed.sig);
+  // 1. Real Cryptographic Ed25519 Signature Verification
+  let sigValid = false;
+  let sigReason = "Invalid JSON or missing fields";
+  if (isJsonValid && parsed && parsed.sig) {
+    const vSig = await verifyRecordSignature(parsed, EXPECTED_ROOM);
+    sigValid = vSig.valid;
+    sigReason = vSig.reason;
+  }
   const iconSig = document.getElementById("icon-sig");
   if (sigValid) {
     iconSig.textContent = "✓";
@@ -169,7 +252,7 @@ async function runVerification() {
   if (overallValid) {
     pillStatus.textContent = "VALID";
     pillStatus.className = "pill pill-green";
-    pillRecord.textContent = "Authentic";
+    pillRecord.textContent = "Byte-exact / Unmodified";
     pillRecord.className = "pill pill-green";
     explanationBox.className = "explanation-box";
     explanationBox.innerHTML = `<strong>Verification Succeeded:</strong> The raw record bytes match leaf index 1 of the committed export root. Inclusion proof is valid against the committed root.`;
@@ -264,4 +347,20 @@ if (typeof module !== "undefined" && module.exports) {
     computeNodeHash,
     computeEvidenceId,
   };
+}
+
+// Hash navigation support moved from inline script for strict CSP compliance
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  window.addEventListener("DOMContentLoaded", () => {
+    if (window.location.hash) {
+      try {
+        const targetEl = document.querySelector(window.location.hash);
+        if (targetEl) {
+          targetEl.scrollIntoView({ behavior: "smooth" });
+        }
+      } catch (e) {
+        // Ignore invalid selectors in URL hash
+      }
+    }
+  });
 }

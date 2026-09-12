@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://technocore.chat http://127.0.0.1:8088;">
   <title>TC Verify — Independent Verification for Technocore Activity</title>
   <meta name="description" content="Inspect retained Technocore activity, verify signed records, and examine cryptographic evidence without trusting the explorer itself.">
   <link rel="stylesheet" href="styles.css">
@@ -573,7 +574,7 @@
 
         <div class="sandbox-card">
           <div class="sandbox-controls">
-            <button id="btn-reset" class="btn btn-sm btn-primary" type="button">Load Authentic Record</button>
+            <button id="btn-reset" class="btn btn-sm btn-primary" type="button">Load Unmodified Record</button>
             <button id="btn-tamper" class="btn btn-sm btn-secondary" type="button">Simulate Record Tampering</button>
           </div>
 
@@ -582,7 +583,7 @@
             <div class="sandbox-input-col">
               <div class="pane-header-box">
                 <span class="field-label">Raw Record Bytes (Leaf Index 1):</span>
-                <span id="record-status-pill" class="pill pill-green">Authentic</span>
+                <span id="record-status-pill" class="pill pill-green">Byte-exact / Unmodified</span>
               </div>
               <textarea id="record-input" class="code-textarea" rows="7" spellcheck="false"></textarea>
               <div class="pane-footer-text">
@@ -665,12 +666,8 @@
             <div class="metric-label">Live Technocore Indexer Tests</div>
           </div>
           <div class="metric-card">
-            <div class="metric-val">36</div>
-            <div class="metric-label">Deployed Browser Journeys</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-val metric-success">0</div>
-            <div class="metric-label">Browser Journey Failures</div>
+            <div class="metric-val">100%</div>
+            <div class="metric-label">Fail-Closed Cryptographic Verification</div>
           </div>
         </div>
       </div>
@@ -751,13 +748,5 @@
   </footer>
 
   <script src="app.js"></script>
-  <script>
-    if (window.location.hash) {
-      try {
-        const targetEl = document.querySelector(window.location.hash);
-        if (targetEl) targetEl.scrollIntoView({ behavior: 'instant' });
-      } catch (e) {}
-    }
-  </script>
 </body>
 </html>

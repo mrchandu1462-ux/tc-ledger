@@ -52,6 +52,157 @@ async function computeNodeHash(leftHex, rightHex) {
   return bytesToHex(new Uint8Array(hashBuffer));
 }
 
+// Ported RFC 6962 tree geometry rules from TC-Ledger v0.4.0 core
+function expected_proof_directions(tree_size, leaf_index) {
+  if (typeof tree_size !== "number" || !Number.isInteger(tree_size)) {
+    throw new TypeError("tree_size must be an integer");
+  }
+  if (typeof leaf_index !== "number" || !Number.isInteger(leaf_index)) {
+    throw new TypeError("leaf_index must be an integer");
+  }
+  if (tree_size < 1) {
+    throw new RangeError("tree_size must be positive");
+  }
+  if (leaf_index < 0 || leaf_index >= tree_size) {
+    throw new RangeError("leaf_index outside tree bounds");
+  }
+
+  const directions = [];
+  let current_index = leaf_index;
+  let level_size = tree_size;
+
+  while (level_size > 1) {
+    if (current_index % 2 === 0) {
+      if (current_index + 1 < level_size) {
+        directions.push("right");
+      }
+    } else {
+      directions.push("left");
+    }
+    current_index = Math.floor(current_index / 2);
+    level_size = Math.floor((level_size + 1) / 2);
+  }
+  return directions;
+}
+
+// Strict fail-closed inclusion proof verifier
+async function verifyInclusionProof(rawLineBytesOrStr, artifact, trustedExpectedRoot) {
+  if (typeof rawLineBytesOrStr === "string") {
+    rawLineBytesOrStr = new TextEncoder().encode(rawLineBytesOrStr);
+  }
+  if (!(rawLineBytesOrStr instanceof Uint8Array)) {
+    return { valid: false, status: "INVALID_INPUT", reason: "Raw record input must be string or Uint8Array." };
+  }
+  if (!artifact || typeof artifact !== "object") {
+    return { valid: false, status: "INVALID_INPUT", reason: "Proof artifact must be a JSON object." };
+  }
+
+  const expectedRoot = (trustedExpectedRoot || artifact.expected_root || artifact.export_root || "").trim();
+  if (!expectedRoot || !/^[0-9a-fA-F]{64}$/.test(expectedRoot)) {
+    return { valid: false, status: "INVALID_INPUT", reason: "No trusted/expected root provided or root is not a valid 64-hex SHA-256 commitment." };
+  }
+
+  if (artifact.expected_root && trustedExpectedRoot && artifact.expected_root.toLowerCase() !== trustedExpectedRoot.trim().toLowerCase()) {
+    return { valid: false, status: "INVALID", reason: "Supplied trusted root does not match artifact expected_root." };
+  }
+
+  if (typeof artifact.leaf_hash !== "string" || !/^[0-9a-fA-F]{64}$/.test(artifact.leaf_hash)) {
+    return { valid: false, status: "INVALID_INPUT", reason: "Proof artifact missing valid 64-hex leaf_hash." };
+  }
+
+  if (typeof artifact.leaf_index !== "number" || !Number.isInteger(artifact.leaf_index)) {
+    return { valid: false, status: "INVALID_INPUT", reason: "Proof artifact missing integer leaf_index." };
+  }
+
+  if (typeof artifact.tree_size !== "number" || !Number.isInteger(artifact.tree_size) || artifact.tree_size < 1) {
+    return { valid: false, status: "INVALID_INPUT", reason: "Proof artifact missing positive integer tree_size." };
+  }
+
+  if (artifact.leaf_index < 0 || artifact.leaf_index >= artifact.tree_size) {
+    return { valid: false, status: "INVALID", reason: "leaf_index outside tree bounds." };
+  }
+
+  if (!Array.isArray(artifact.audit_path)) {
+    return { valid: false, status: "INVALID_INPUT", reason: "Proof artifact missing audit_path array." };
+  }
+
+  // Compute leaf hash and verify match
+  const actualLeafHash = await computeLeafHash(rawLineBytesOrStr);
+  if (actualLeafHash.toLowerCase() !== artifact.leaf_hash.toLowerCase()) {
+    return {
+      valid: false,
+      status: "INVALID",
+      computedLeaf: actualLeafHash,
+      expectedLeaf: artifact.leaf_hash,
+      reason: "Computed leaf hash differs from proof artifact leaf_hash (mutated record)."
+    };
+  }
+
+  // Verify audit-path geometry matches RFC 6962 tree shape
+  let expectedDirs;
+  try {
+    expectedDirs = expected_proof_directions(artifact.tree_size, artifact.leaf_index);
+  } catch (err) {
+    return { valid: false, status: "INVALID", reason: `Geometry computation error: ${err.message}` };
+  }
+
+  if (artifact.audit_path.length !== expectedDirs.length) {
+    return {
+      valid: false,
+      status: "INVALID",
+      reason: `Invalid audit-path geometry: expected length ${expectedDirs.length}, got ${artifact.audit_path.length}.`
+    };
+  }
+
+  // Fold audit path
+  let current = actualLeafHash;
+  for (let i = 0; i < artifact.audit_path.length; i++) {
+    const step = artifact.audit_path[i];
+    const expectedDir = expectedDirs[i];
+
+    if (!step || typeof step !== "object") {
+      return { valid: false, status: "INVALID", reason: `Malformed audit-path step at index ${i}.` };
+    }
+    if (step.position !== expectedDir) {
+      return {
+        valid: false,
+        status: "INVALID",
+        reason: `Invalid audit-path direction at step ${i}: expected '${expectedDir}', got '${step.position}'.`
+      };
+    }
+    if (typeof step.sibling_hash !== "string" || !/^[0-9a-fA-F]{64}$/.test(step.sibling_hash)) {
+      return { valid: false, status: "INVALID", reason: `Invalid sibling hash format at step ${i} (expected 32-byte hex).` };
+    }
+
+    if (step.position === "left") {
+      current = await computeNodeHash(step.sibling_hash, current);
+    } else {
+      current = await computeNodeHash(current, step.sibling_hash);
+    }
+  }
+
+  if (current.toLowerCase() !== expectedRoot.toLowerCase()) {
+    return {
+      valid: false,
+      status: "INVALID",
+      computedLeaf: actualLeafHash,
+      computedRoot: current,
+      expectedRoot: expectedRoot,
+      reason: "Reconstructed root does not match trusted expected root."
+    };
+  }
+
+  return {
+    valid: true,
+    status: "VALID",
+    computedLeaf: actualLeafHash,
+    computedRoot: current,
+    expectedRoot: expectedRoot,
+    leafIndex: artifact.leaf_index,
+    treeSize: artifact.tree_size
+  };
+}
+
 // RFC 8785 (JCS) deterministic evidence ID
 async function computeEvidenceId(recordObj) {
   try {
@@ -131,7 +282,13 @@ function base64UrlToBytes(str) {
 // Verify Ed25519 signature over UTF-8 "room|nonce|text"
 async function verifyRecordSignature(recordObj, room) {
   try {
-    if (!recordObj || !recordObj.from || !recordObj.sig || recordObj.nonce === undefined || !recordObj.text) {
+    if (!recordObj) {
+      return { valid: false, reason: "Missing record object" };
+    }
+    if (!recordObj.sig) {
+      return { valid: false, reason: "Unsigned record (missing signature)." };
+    }
+    if (!recordObj.from || recordObj.nonce === undefined || !recordObj.text) {
       return { valid: false, reason: "Missing required signature fields" };
     }
     const pubKeyBytes = extractEd25519PubKey(recordObj.from);
@@ -149,11 +306,8 @@ async function verifyRecordSignature(recordObj, room) {
       const ok = await subtle.verify({ name: "Ed25519" }, key, sigBytes, canonicalMsg);
       return { valid: ok, reason: ok ? "Valid Ed25519 signature" : "Signature check failed" };
     } catch (e) {
-      // Fallback for older runtimes without WebCrypto Ed25519: format is strictly validated
-      if (/^[A-Za-z0-9_-]{86}(?:==)?$/.test(recordObj.sig)) {
-        return { valid: true, reason: "Signature format structurally valid (Ed25519 raw 64-byte payload)" };
-      }
-      return { valid: false, reason: "Malformed signature format" };
+      // Fail-closed: Never treat structural signature validity as cryptographic validity
+      return { valid: false, reason: "Ed25519 verification unavailable in this browser." };
     }
   } catch (err) {
     return { valid: false, reason: err.message || "Signature verification error" };
@@ -174,6 +328,9 @@ const DEMO_DID_UNKNOWN = "did:key:z6MkuUnknownIdentityNotInIndexedDemoDataset999
 const LIVE_DID_ACTIVE = "did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z";
 const LIVE_DID_NONEXISTENT = "did:key:z6MkmVLivcEneu3HGgGLkQBZvkZeZEMihRKzdWq9vk5DYGmR";
 const LIVE_ROOMS_DATA = {};
+const _ROOM_EXPORT_CACHE = new Map(); // room -> { generation, text, ts }
+let _currentLookupAbortController = null;
+
 let currentExplorerMode = "synthetic"; // "synthetic" | "live"
 
 
@@ -484,42 +641,74 @@ async function lookupLiveDid(did) {
     throw new Error("DID cannot be empty");
   }
 
+  // Pre-validate DID before initiating network calls: zero downloads on malformed input
+  try {
+    extractEd25519PubKey(cleanDid);
+  } catch (err) {
+    throw new Error(`Malformed DID: ${err.message}. Expected did:key:z6Mk...`);
+  }
+
+  // Cancel prior in-flight request if user re-triggered lookup
+  if (_currentLookupAbortController) {
+    _currentLookupAbortController.abort();
+  }
+  _currentLookupAbortController = new AbortController();
+  const signal = _currentLookupAbortController.signal;
+
   // 1. First attempt: Query local adapter server if running
   const localAdapterUrl = `http://127.0.0.1:8088/api/index?did=${encodeURIComponent(cleanDid)}`;
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1800);
-    const resp = await fetch(localAdapterUrl, { signal: controller.signal });
+    const adapterCtrl = new AbortController();
+    const timeoutId = setTimeout(() => adapterCtrl.abort(), 1200);
+    const resp = await fetch(localAdapterUrl, { signal: adapterCtrl.signal });
     clearTimeout(timeoutId);
     if (resp.ok) {
       const data = await resp.json();
       return adaptIndexerJsonToExplorer(data);
     }
   } catch (e) {
-    // Local adapter not running; proceed to direct Technocore public CORS read
+    // Local adapter not running; proceed directly to browser-direct Technocore read
   }
 
-  // 2. Direct Technocore public read endpoints (which support CORS access-control-allow-origin: *)
+  // 2. Direct Technocore public read endpoints (with session caching)
   const seedRooms = ["tclk-offers", "lobby"];
   const matchedRecords = [];
   const roomDetails = {};
   let roomsAttempted = 0;
   let roomsSucceeded = 0;
+  const inspectedRoomGens = {};
+
+  const now = Date.now();
 
   for (const room of seedRooms) {
     roomsAttempted++;
     const exportUrl = `https://technocore.chat/r/${encodeURIComponent(room)}/export`;
     try {
-      const res = await fetch(exportUrl);
-      if (!res.ok) continue;
-      roomsSucceeded++;
-      const genHeader = res.headers.get("x-room-generation");
-      const generation = genHeader ? parseInt(genHeader, 10) : null;
-      const text = await res.text();
-      const lines = text.split("\n");
-      const roomMatches = [];
+      let generation = null;
+      let text = null;
+      const cached = _ROOM_EXPORT_CACHE.get(room);
 
-      for (const line of lines) {
+      if (cached && now - cached.ts < 30000) {
+        generation = cached.generation;
+        text = cached.text;
+      } else {
+        const res = await fetch(exportUrl, { signal });
+        if (!res.ok) continue;
+        const genHeader = res.headers.get("x-room-generation");
+        generation = genHeader ? parseInt(genHeader, 10) : null;
+        text = await res.text();
+        _ROOM_EXPORT_CACHE.set(room, { generation, text, ts: now });
+      }
+
+      roomsSucceeded++;
+      inspectedRoomGens[room] = generation !== null ? generation : "N/A";
+
+      const lines = text.split("\n");
+      const roomAllMatches = [];
+      const roomVerified = [];
+
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const line = lines[lineIdx];
         if (!line.trim()) continue;
         let item;
         try {
@@ -528,29 +717,46 @@ async function lookupLiveDid(did) {
           continue;
         }
         if (item && item.from === cleanDid) {
-          const v = await verifyRecordSignature(item, room);
-          if (v.valid) {
-            item.rawLine = line + "\n";
-            item.status = "VALID";
-            item.room = room;
-            roomMatches.push(item);
-            matchedRecords.push(item);
+          item.rawLine = line + "\n";
+          item.room = room;
+          item.leafIndex = lineIdx;
+
+          if (!item.sig) {
+            item.status = "UNSIGNED";
+            item.sigReason = "No signature present on wire record";
+          } else {
+            const v = await verifyRecordSignature(item, room);
+            if (v.valid) {
+              item.status = "VALID";
+              item.sigReason = v.reason;
+              roomVerified.push(item);
+            } else {
+              item.status = "INVALID";
+              item.sigReason = v.reason;
+            }
           }
+          roomAllMatches.push(item);
+          matchedRecords.push(item);
         }
       }
 
-      if (roomMatches.length > 0) {
+      if (roomAllMatches.length > 0) {
         roomDetails[room] = {
           room,
           generation,
-          verifiedRecords: roomMatches,
-          verifiedCount: roomMatches.length,
-          latestSeq: Math.max(...roomMatches.map(m => m.seq || 0)),
-          latestTs: roomMatches[roomMatches.length - 1].ts
+          allRecords: roomAllMatches,
+          verifiedRecords: roomVerified,
+          verifiedCount: roomVerified.length,
+          totalCount: roomAllMatches.length,
+          latestSeq: Math.max(...roomAllMatches.map(m => m.seq || 0)),
+          latestTs: roomAllMatches[roomAllMatches.length - 1].ts
         };
       }
     } catch (e) {
-      // Room read error
+      if (signal.aborted) {
+        throw new Error("Lookup cancelled");
+      }
+      // Continue to next seed room
     }
   }
 
@@ -558,30 +764,39 @@ async function lookupLiveDid(did) {
     throw new Error("Could not connect to Technocore public endpoints. Start the local indexer adapter (python tools/tc_indexer_server.py) or check internet connectivity.");
   }
 
+  const verifiedRecords = matchedRecords.filter(r => r.status === "VALID");
+  const unsignedRecords = matchedRecords.filter(r => r.status === "UNSIGNED");
+  const invalidRecords = matchedRecords.filter(r => r.status === "INVALID");
+
+  const scopeNotice = `Checked 2 indexed public rooms: #tclk-offers (gen ${inspectedRoomGens["tclk-offers"] ?? "N/A"}), #lobby (gen ${inspectedRoomGens["lobby"] ?? "N/A"}).`;
+  const directNotice = "Live mode contacts Technocore directly from your browser. TC Verify does not proxy or modify these read requests.";
+  const retentionNotice = "CURRENTLY RETAINED PUBLIC ACTIVITY: Results reflect records currently retained in inspected public room exports. No claim of complete lifetime history. Evicted or private records are not included. NO DATA FOUND does not imply non-existence.";
+
   if (matchedRecords.length === 0) {
     return {
       status: "NO_DATA",
       statusLabel: "NO DATA FOUND",
-      statusDescription: "No matching verified retained activity was found in the inspected public rooms for this DID. This does not imply that the DID does not exist.",
+      statusDescription: "No matching retained activity was found in the inspected public rooms for this DID. This does not imply that the DID does not exist.",
       did: cleanDid,
       persona: "Live Verified Identity",
       lastActivity: "NONE",
       verifiedRecords: 0,
+      unsignedRecords: 0,
+      invalidSignatures: 0,
       totalRetainedRecords: 0,
       roomCount: 0,
       latestGeneration: "N/A",
       latestCommittedRoot: "N/A",
       rooms: [],
-      retentionNotice: "CURRENTLY RETAINED PUBLIC ACTIVITY: Results reflect records currently retained in inspected public room exports. No claim of complete lifetime history.",
+      scopeNotice,
+      directDisclosure: directNotice,
+      retentionNotice,
+      lastChecked: new Date().toUTCString(),
       isLive: true
     };
   }
 
-  const sortedTs = matchedRecords.map(r => new Date(r.ts).getTime()).filter(t => !isNaN(t)).sort((a, b) => a - b);
-  const latestMs = sortedTs[sortedTs.length - 1];
-  const ageHours = (Date.now() - latestMs) / (1000 * 60 * 60);
-  const isActive = ageHours <= 24.0;
-
+  // Populate LIVE_ROOMS_DATA strictly from live room details
   const roomsList = Object.keys(roomDetails).map(rName => {
     const act = roomDetails[rName];
     const roomId = `live-${rName}`;
@@ -591,37 +806,67 @@ async function lookupLiveDid(did) {
       description: `Live retained records for ${cleanDid} in #${rName} (Generation ${act.generation}).`,
       generation: act.generation !== null ? act.generation : "N/A",
       committedRoot: `X-Room-Gen: ${act.generation !== null ? act.generation : "N/A"}`,
-      records: act.verifiedRecords,
-      messages: act.verifiedRecords
+      records: act.allRecords,
+      messages: act.allRecords
     };
     return {
       id: roomId,
       rawRoomName: rName,
       name: rName,
-      retainedRecords: act.verifiedCount,
+      retainedRecords: act.totalCount,
+      verifiedRecords: act.verifiedCount,
       lastActivity: act.latestTs,
-      verifiedStatus: "Verified",
+      verifiedStatus: act.verifiedCount > 0 ? "Verified" : "Unverified Activity",
       generation: act.generation !== null ? act.generation : "N/A",
       committedRoot: `X-Room-Gen: ${act.generation !== null ? act.generation : "N/A"}`
     };
   });
 
+  // Calculate Status: NEVER mark ACTIVE based on unsigned or invalid records
+  let status = "NO_DATA";
+  let statusLabel = "NO DATA FOUND";
+  let statusDescription = "";
+
+  const sortedVerifiedTs = verifiedRecords.map(r => new Date(r.ts).getTime()).filter(t => !isNaN(t)).sort((a, b) => a - b);
+  const latestVerifiedMs = sortedVerifiedTs.length > 0 ? sortedVerifiedTs[sortedVerifiedTs.length - 1] : null;
+
+  if (verifiedRecords.length > 0 && latestVerifiedMs !== null) {
+    const ageHours = (now - latestVerifiedMs) / (1000 * 60 * 60);
+    const isActive = ageHours <= 24.0;
+    status = isActive ? "ACTIVE" : "STALE";
+    statusLabel = isActive ? "ACTIVE" : "STALE / INACTIVE";
+    statusDescription = isActive
+      ? `Recent verified activity exists within the 24-hour activity window (${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"}).`
+      : `Verified retained activity exists, but none falls within the 24-hour activity window (${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"}).`;
+  } else {
+    // Unverified matching records found
+    status = "UNVERIFIED_ACTIVITY";
+    statusLabel = "MATCHING ACTIVITY FOUND (UNVERIFIED)";
+    statusDescription = `Matching unverified records were found in inspected exports (${unsignedRecords.length} unsigned, ${invalidRecords.length} invalid signatures), but 0 cryptographically verified records exist. Identity cannot be verified active without valid signatures.`;
+  }
+
+  const allSortedTs = matchedRecords.map(r => new Date(r.ts).getTime()).filter(t => !isNaN(t)).sort((a, b) => a - b);
+  const latestAnyMs = allSortedTs.length > 0 ? allSortedTs[allSortedTs.length - 1] : null;
+
   return {
-    status: isActive ? "ACTIVE" : "STALE",
-    statusLabel: isActive ? "ACTIVE" : "STALE / INACTIVE",
-    statusDescription: isActive
-      ? "Recent verified activity exists within the 24-hour indexer activity window."
-      : "Known verified retained activity exists, but none falls within the 24-hour activity window.",
+    status,
+    statusLabel,
+    statusDescription,
     did: cleanDid,
     persona: "Live Verified Identity",
-    lastActivity: new Date(latestMs).toISOString(),
-    verifiedRecords: matchedRecords.length,
+    lastActivity: latestVerifiedMs ? new Date(latestVerifiedMs).toISOString() : (latestAnyMs ? new Date(latestAnyMs).toISOString() + " (Unverified)" : "NONE"),
+    verifiedRecords: verifiedRecords.length,
+    unsignedRecords: unsignedRecords.length,
+    invalidSignatures: invalidRecords.length,
     totalRetainedRecords: matchedRecords.length,
     roomCount: roomsList.length,
     latestGeneration: Object.values(roomDetails)[0]?.generation ?? "N/A",
     latestCommittedRoot: "Currently Retained Public Activity",
     rooms: roomsList,
-    retentionNotice: "CURRENTLY RETAINED PUBLIC ACTIVITY: Results reflect records currently retained in inspected public room exports. No claim of complete lifetime history.",
+    scopeNotice,
+    directDisclosure: directNotice,
+    retentionNotice,
+    lastChecked: new Date().toUTCString(),
     isLive: true
   };
 }
@@ -949,12 +1194,28 @@ function renderExplorerResult(res) {
   metaRoot.textContent = rootStr.length > 20 ? rootStr.substring(0, 16) + "..." : rootStr;
   metaRoot.title = rootStr;
 
+  const metaUnsigned = document.getElementById("meta-unsigned-records");
+  if (metaUnsigned) metaUnsigned.textContent = res.unsignedRecords || 0;
+  const metaInvalid = document.getElementById("meta-invalid-records");
+  if (metaInvalid) metaInvalid.textContent = res.invalidSignatures || 0;
+
+  const metaScope = document.getElementById("meta-scope-details");
+  if (metaScope && res.scopeNotice) metaScope.textContent = res.scopeNotice;
+  const metaChecked = document.getElementById("meta-last-checked");
+  if (metaChecked && res.lastChecked) metaChecked.textContent = `Last checked: ${res.lastChecked}`;
+
   if (res.status === "ACTIVE") {
     statusBadge.textContent = "🟢 ACTIVE";
     statusBadge.className = "status-pill status-active";
-  } else {
-    statusBadge.textContent = "⚪ STALE / INACTIVE";
+  } else if (res.status === "STALE") {
+    statusBadge.textContent = "🟡 STALE / INACTIVE";
     statusBadge.className = "status-pill status-stale";
+  } else if (res.status === "UNVERIFIED_ACTIVITY") {
+    statusBadge.textContent = "⚠️ MATCHING ACTIVITY FOUND (UNVERIFIED)";
+    statusBadge.className = "status-pill status-nodata";
+  } else {
+    statusBadge.textContent = "⚪ NO DATA FOUND";
+    statusBadge.className = "status-pill status-nodata";
   }
 
   // Render Room Cards
@@ -964,24 +1225,54 @@ function renderExplorerResult(res) {
 function renderRoomCards(rooms) {
   const grid = document.getElementById("room-cards-grid");
   if (!grid) return;
-  grid.innerHTML = "";
+  grid.replaceChildren();
 
   rooms.forEach(r => {
     const card = document.createElement("div");
     card.className = "card room-card";
-    card.innerHTML = `
-      <div class="room-card-header">
-        <div class="room-card-title">#${r.name.toLowerCase()}</div>
-        <span class="room-badge">${r.verifiedStatus} ✓</span>
-      </div>
-      <div class="room-metric">${r.retainedRecords} retained records</div>
-      <div class="room-meta text-dim">Latest activity: ${r.lastActivity}</div>
-      <div class="room-meta text-dim">Committed Root: <code>${r.committedRoot}</code></div>
-      <button class="btn btn-sm btn-secondary btn-view-room" data-room="${r.id}">View Activity</button>
-    `;
-    card.querySelector(".btn-view-room").addEventListener("click", () => {
+
+    const header = document.createElement("div");
+    header.className = "room-card-header";
+
+    const title = document.createElement("div");
+    title.className = "room-card-title";
+    title.textContent = "#" + String(r.name || "").toLowerCase();
+
+    const badge = document.createElement("span");
+    badge.className = "room-badge";
+    badge.textContent = String(r.verifiedStatus || "Verified") + " ✓";
+
+    header.appendChild(title);
+    header.appendChild(badge);
+    card.appendChild(header);
+
+    const metric = document.createElement("div");
+    metric.className = "room-metric";
+    metric.textContent = `${r.retainedRecords || 0} retained records`;
+    card.appendChild(metric);
+
+    const meta1 = document.createElement("div");
+    meta1.className = "room-meta text-dim";
+    meta1.textContent = `Latest activity: ${r.lastActivity || "N/A"}`;
+    card.appendChild(meta1);
+
+    const meta2 = document.createElement("div");
+    meta2.className = "room-meta text-dim";
+    meta2.appendChild(document.createTextNode("Committed Root: "));
+    const codeEl = document.createElement("code");
+    codeEl.textContent = String(r.committedRoot || "N/A");
+    meta2.appendChild(codeEl);
+    card.appendChild(meta2);
+
+    const btn = document.createElement("button");
+    btn.className = "btn btn-sm btn-secondary btn-view-room";
+    btn.setAttribute("data-room", String(r.id || ""));
+    btn.textContent = "View Activity";
+    btn.addEventListener("click", () => {
       openRoom(r.id);
     });
+    card.appendChild(btn);
+
     grid.appendChild(card);
   });
 }
@@ -1008,7 +1299,15 @@ function openRoom(roomId) {
     document.getElementById("chat-room-root").textContent = "N/A";
     document.getElementById("chat-room-root").title = "N/A";
     const list = document.getElementById("chat-messages-list");
-    list.innerHTML = `<div class="chat-empty-notice text-secondary" style="padding: 1rem; text-align: center;">${isLive ? "Live room data is unavailable for this selection. No synthetic data was substituted." : "No records available."}</div>`;
+    list.replaceChildren();
+    const emptyNotice = document.createElement("div");
+    emptyNotice.className = "chat-empty-notice text-secondary";
+    emptyNotice.style.padding = "1rem";
+    emptyNotice.style.textAlign = "center";
+    emptyNotice.textContent = isLive
+      ? "Live room data is unavailable for this selection. No synthetic data was substituted."
+      : "No records available.";
+    list.appendChild(emptyNotice);
     return;
   }
 
@@ -1026,27 +1325,68 @@ function openRoom(roomId) {
   document.getElementById("chat-room-root").title = rootStr;
 
   const list = document.getElementById("chat-messages-list");
-  list.innerHTML = "";
+  list.replaceChildren();
 
   records.forEach(rec => {
     const isTarget = rec.from === currentDidData.did;
     const msgEl = document.createElement("div");
     msgEl.className = `chat-item ${isTarget ? "chat-target" : ""}`;
-    msgEl.innerHTML = `
-      <div class="chat-item-header">
-        <span class="chat-sender ${isTarget ? "text-cyan font-bold" : "text-dim"}">${rec.from.substring(0, 24)}...</span>
-        <span class="chat-ts text-dim">${rec.ts} (seq: ${rec.seq})</span>
-      </div>
-      <div class="chat-text">${escapeHtml(rec.text)}</div>
-      <div class="chat-item-footer">
-        <span class="chat-badge badge-sig">✓ Signature verified</span>
-        <span class="chat-badge badge-proof">${rec.proof ? "✓ Inclusion proof available" : "✓ Retained line"}</span>
-        <button class="btn btn-sm btn-outline btn-inspect-rec">Inspect Record &amp; Proof</button>
-      </div>
-    `;
-    msgEl.querySelector(".btn-inspect-rec").addEventListener("click", () => {
+
+    const itemHeader = document.createElement("div");
+    itemHeader.className = "chat-item-header";
+
+    const senderSpan = document.createElement("span");
+    senderSpan.className = `chat-sender ${isTarget ? "text-cyan font-bold" : "text-dim"}`;
+    const fromStr = String(rec.from || "");
+    senderSpan.textContent = fromStr.length > 24 ? fromStr.substring(0, 24) + "..." : fromStr;
+
+    const tsSpan = document.createElement("span");
+    tsSpan.className = "chat-ts text-dim";
+    tsSpan.textContent = `${rec.ts || "N/A"} (seq: ${rec.seq !== undefined ? rec.seq : "N/A"})`;
+
+    itemHeader.appendChild(senderSpan);
+    itemHeader.appendChild(tsSpan);
+    msgEl.appendChild(itemHeader);
+
+    const textDiv = document.createElement("div");
+    textDiv.className = "chat-text";
+    textDiv.textContent = String(rec.text || "");
+    msgEl.appendChild(textDiv);
+
+    const itemFooter = document.createElement("div");
+    itemFooter.className = "chat-item-footer";
+
+    // Dynamic signature badge according to actual verification status
+    const sigBadge = document.createElement("span");
+    if (rec.status === "VALID") {
+      sigBadge.className = "chat-badge badge-sig";
+      sigBadge.textContent = "✓ Signature verified";
+    } else if (rec.status === "UNSIGNED") {
+      sigBadge.className = "chat-badge badge-unsigned text-amber";
+      sigBadge.textContent = "⚠ Unsigned record";
+    } else if (rec.status === "INVALID") {
+      sigBadge.className = "chat-badge badge-invalid text-red";
+      sigBadge.textContent = "✕ Invalid signature";
+    } else {
+      sigBadge.className = "chat-badge badge-sig";
+      sigBadge.textContent = rec.sig ? "✓ Signature present" : "⚠ Unsigned";
+    }
+    itemFooter.appendChild(sigBadge);
+
+    const proofBadge = document.createElement("span");
+    proofBadge.className = "chat-badge badge-proof";
+    proofBadge.textContent = rec.proof ? "✓ Inclusion proof available" : "✓ Retained line";
+    itemFooter.appendChild(proofBadge);
+
+    const inspectBtn = document.createElement("button");
+    inspectBtn.className = "btn btn-sm btn-outline btn-inspect-rec";
+    inspectBtn.textContent = "Inspect Record & Proof";
+    inspectBtn.addEventListener("click", () => {
       openRecordDetail(rec, roomId);
     });
+    itemFooter.appendChild(inspectBtn);
+
+    msgEl.appendChild(itemFooter);
     list.appendChild(msgEl);
   });
 }
@@ -1057,72 +1397,102 @@ async function openRecordDetail(record, roomId) {
   if (!modal) return;
   modal.classList.remove("hidden");
 
-  document.getElementById("modal-seq").textContent = record.seq;
-  document.getElementById("modal-room").textContent = roomId;
-  document.getElementById("modal-nonce").textContent = record.nonce;
-  document.getElementById("modal-ts").textContent = record.ts;
-  document.getElementById("modal-sender").textContent = record.from;
-  document.getElementById("modal-text").textContent = record.text;
-  document.getElementById("modal-sig").textContent = record.sig;
-  document.getElementById("modal-raw-line").textContent = record.rawLine;
+  document.getElementById("modal-seq").textContent = record.seq !== undefined ? record.seq : "N/A";
+  document.getElementById("modal-room").textContent = roomId || "N/A";
+  document.getElementById("modal-nonce").textContent = record.nonce !== undefined ? record.nonce : "N/A";
+  document.getElementById("modal-ts").textContent = record.ts || "N/A";
+  document.getElementById("modal-sender").textContent = record.from || "N/A";
+  document.getElementById("modal-text").textContent = record.text || "";
+  document.getElementById("modal-sig").textContent = record.sig || "N/A";
+  document.getElementById("modal-raw-line").textContent = record.rawLine || "";
 
   // Run live verification
   const v = await verifyRecordDetails(record, roomId);
-  document.getElementById("modal-v-sig").textContent = v.sigResult.valid ? "✓ VALID (" + v.sigResult.reason + ")" : "✕ INVALID (" + v.sigResult.reason + ")";
-  document.getElementById("modal-v-sig").className = v.sigResult.valid ? "text-green" : "text-red";
+  const sigResultEl = document.getElementById("modal-v-sig");
+  if (record.status === "UNSIGNED" || !record.sig) {
+    sigResultEl.textContent = "⚠ UNSIGNED (No signature present on wire record)";
+    sigResultEl.className = "text-amber";
+  } else if (v.sigResult.valid) {
+    sigResultEl.textContent = "✓ VALID (" + v.sigResult.reason + ")";
+    sigResultEl.className = "text-green";
+  } else {
+    sigResultEl.textContent = "✕ INVALID (" + v.sigResult.reason + ")";
+    sigResultEl.className = "text-red";
+  }
 
   document.getElementById("modal-v-evidence-id").textContent = v.evidenceId;
   document.getElementById("modal-v-leaf-hash").textContent = v.computedLeafHash;
 
   const incEl = document.getElementById("modal-v-inclusion");
   const rootEl = document.getElementById("modal-v-root");
-  if (record.proof) {
-    incEl.textContent = v.inclusionResult.verified ? "✓ VALID (Inclusion proof verified against expected root)" : "✕ INVALID";
+  const btnDownloadProof = document.getElementById("btn-download-proof");
+  const btnViewProofJson = document.getElementById("btn-view-proof-json");
+  const proofJsonBox = document.getElementById("modal-proof-json");
+
+  const hasGenuineProof = Boolean(
+    record.proof &&
+    record.proof.schema === "tc-ledger/inclusion-proof/v1" &&
+    Array.isArray(record.proof.audit_path) &&
+    record.proof.audit_path.length > 0 &&
+    record.proof.expected_root &&
+    record.proof.leaf_hash &&
+    typeof record.proof.leaf_index === "number" &&
+    typeof record.proof.tree_size === "number"
+  );
+
+  if (hasGenuineProof) {
+    incEl.textContent = v.inclusionResult.verified
+      ? "✓ VALID (Inclusion proof verified against expected root)"
+      : "✕ INVALID (Proof folding failed)";
     incEl.className = v.inclusionResult.verified ? "text-green" : "text-red";
     rootEl.textContent = record.proof.expected_root;
+
+    if (btnDownloadProof) {
+      btnDownloadProof.disabled = false;
+      btnDownloadProof.style.opacity = "1";
+      btnDownloadProof.style.cursor = "pointer";
+      btnDownloadProof.title = "Download verified inclusion proof artifact";
+      btnDownloadProof.onclick = () => {
+        downloadJson(`proof_leaf_${record.proof.leaf_index}.json`, record.proof);
+      };
+    }
+
+    if (btnViewProofJson && proofJsonBox) {
+      btnViewProofJson.disabled = false;
+      btnViewProofJson.style.opacity = "1";
+      btnViewProofJson.style.cursor = "pointer";
+      btnViewProofJson.onclick = () => {
+        proofJsonBox.classList.toggle("hidden");
+        if (!proofJsonBox.classList.contains("hidden")) {
+          proofJsonBox.textContent = JSON.stringify(record.proof, null, 2);
+        }
+      };
+    }
   } else {
-    incEl.textContent = "Retained in export; inclusion proof not requested for this leaf index";
+    incEl.textContent = "A verified inclusion proof is not available for this record.";
     incEl.className = "text-dim";
     const activeRoomsData = currentExplorerMode === "live"
       ? LIVE_ROOMS_DATA
       : SYNTHETIC_ROOMS_DATA;
     rootEl.textContent = activeRoomsData[roomId]?.committedRoot || "N/A";
-  }
 
-  // Setup proof download / view buttons
-  const btnDownloadProof = document.getElementById("btn-download-proof");
-  if (btnDownloadProof) {
-    btnDownloadProof.onclick = () => {
-      const proofObj = record.proof || {
-        schema: "tc-ledger/inclusion-proof/v1",
-        version: 1,
-        profile: "tc-ledger/1",
-        room: roomId,
-        generation: 1,
-        tree_size: 6,
-        leaf_index: record.leafIndex,
-        leaf_hash: v.computedLeafHash,
-        notice: "Synthetic demo artifact for leaf index " + record.leafIndex
-      };
-      downloadJson(`proof_leaf_${record.leafIndex}.json`, proofObj);
-    };
-  }
+    // Strictly disable download: NEVER fabricate fake inclusion proof artifacts
+    if (btnDownloadProof) {
+      btnDownloadProof.disabled = true;
+      btnDownloadProof.style.opacity = "0.4";
+      btnDownloadProof.style.cursor = "not-allowed";
+      btnDownloadProof.title = "A verified inclusion proof is not available for this record.";
+      btnDownloadProof.onclick = null;
+    }
 
-  const btnViewProofJson = document.getElementById("btn-view-proof-json");
-  const proofJsonBox = document.getElementById("modal-proof-json");
-  if (btnViewProofJson && proofJsonBox) {
-    btnViewProofJson.onclick = () => {
-      proofJsonBox.classList.toggle("hidden");
-      if (!proofJsonBox.classList.contains("hidden")) {
-        const proofObj = record.proof || {
-          schema: "tc-ledger/inclusion-proof/v1",
-          leaf_index: record.leafIndex,
-          leaf_hash: v.computedLeafHash,
-          room: roomId
-        };
-        proofJsonBox.textContent = JSON.stringify(proofObj, null, 2);
-      }
-    };
+    if (btnViewProofJson && proofJsonBox) {
+      btnViewProofJson.disabled = true;
+      btnViewProofJson.style.opacity = "0.4";
+      btnViewProofJson.style.cursor = "not-allowed";
+      btnViewProofJson.title = "A verified inclusion proof is not available for this record.";
+      btnViewProofJson.onclick = null;
+      proofJsonBox.classList.add("hidden");
+    }
   }
 }
 
@@ -1146,76 +1516,97 @@ function downloadJson(filename, obj) {
 }
 
 // -----------------------------------------------------------------------------
-// Self-Verification Tool Runner
+// Self-Verification Tool Runner (Strict Fail-Closed)
 // -----------------------------------------------------------------------------
 
 async function runSelfVerificationTool() {
   const rawInput = document.getElementById("self-verify-record").value;
   const proofInput = document.getElementById("self-verify-proof").value;
-  const expectedRoot = document.getElementById("self-verify-root").value.trim();
+  const expectedRootInput = document.getElementById("self-verify-root").value.trim();
   const outputBox = document.getElementById("self-verify-output");
   if (!outputBox) return;
 
   outputBox.classList.remove("hidden");
+  outputBox.replaceChildren();
 
+  if (!rawInput.trim()) {
+    const errSpan = document.createElement("span");
+    errSpan.className = "text-red";
+    errSpan.textContent = "Error: Raw export line is empty.";
+    outputBox.appendChild(errSpan);
+    return;
+  }
+
+  let parsedProof = null;
   try {
-    if (!rawInput.trim()) {
-      outputBox.innerHTML = "<span class='text-red'>Error: Raw export line is empty.</span>";
-      return;
-    }
-    const enc = new TextEncoder();
-    const rawBytes = enc.encode(rawInput);
-    const leafHash = await computeLeafHash(rawBytes);
+    parsedProof = JSON.parse(proofInput);
+  } catch (e) {
+    const errSpan = document.createElement("span");
+    errSpan.className = "text-red";
+    errSpan.textContent = "Error: Proof artifact is not valid JSON.";
+    outputBox.appendChild(errSpan);
+    return;
+  }
 
-    let parsedProof = null;
-    try {
-      parsedProof = JSON.parse(proofInput);
-    } catch (e) {
-      outputBox.innerHTML = `<span class='text-red'>Error: Proof artifact is not valid JSON.</span>`;
-      return;
-    }
+  const result = await verifyInclusionProof(rawInput, parsedProof, expectedRootInput);
 
-    if (!Array.isArray(parsedProof.audit_path)) {
-      outputBox.innerHTML = `<span class='text-red'>Error: Proof artifact missing audit_path array.</span>`;
-      return;
-    }
+  if (result.status === "INVALID_INPUT") {
+    const box = document.createElement("div");
+    box.className = "result-box result-invalid";
+    const h4 = document.createElement("h4");
+    h4.textContent = "✕ NO VERDICT: Invalid Input";
+    const p = document.createElement("p");
+    p.textContent = result.reason;
+    box.appendChild(h4);
+    box.appendChild(p);
+    outputBox.appendChild(box);
+    return;
+  }
 
-    // Fold proof path
-    let current = leafHash;
-    for (const step of parsedProof.audit_path) {
-      if (step.position === "left") {
-        current = await computeNodeHash(step.sibling_hash, current);
-      } else {
-        current = await computeNodeHash(current, step.sibling_hash);
-      }
-    }
+  if (result.valid) {
+    const box = document.createElement("div");
+    box.className = "result-box result-valid";
+    const h4 = document.createElement("h4");
+    h4.textContent = "✓ VALID: Inclusion Proof Verified";
 
-    const matchesLeaf = !parsedProof.leaf_hash || (parsedProof.leaf_hash === leafHash);
-    const targetRoot = expectedRoot || parsedProof.expected_root;
-    const matchesRoot = targetRoot ? (current === targetRoot) : true;
+    const pLeaf = document.createElement("p");
+    pLeaf.innerHTML = `<strong>Computed Leaf Hash:</strong> <code>${escapeHtml(result.computedLeaf)}</code>`;
+    const pRoot = document.createElement("p");
+    pRoot.innerHTML = `<strong>Reconstructed Root:</strong> <code>${escapeHtml(result.computedRoot)}</code>`;
+    const pMsg = document.createElement("p");
+    pMsg.textContent = `The raw record bytes match leaf index ${result.leafIndex} of tree size ${result.treeSize} against trusted commitment ${result.expectedRoot}. Offline verification complete.`;
 
-    if (matchesLeaf && matchesRoot) {
-      outputBox.innerHTML = `
-        <div class="result-box result-valid">
-          <h4>✓ VALID: Inclusion Proof Verified</h4>
-          <p><strong>Computed Leaf Hash:</strong> <code>${leafHash}</code></p>
-          <p><strong>Reconstructed Root:</strong> <code>${current}</code></p>
-          <p>The raw record bytes match leaf index ${parsedProof.leaf_index !== undefined ? parsedProof.leaf_index : "N/A"} of the committed export root. Offline verification is complete.</p>
-        </div>
-      `;
-    } else {
-      outputBox.innerHTML = `
-        <div class="result-box result-invalid">
-          <h4>✕ INVALID: Cryptographic Verification Failed</h4>
-          <p><strong>Computed Leaf Hash:</strong> <code>${leafHash}</code></p>
-          <p><strong>Reconstructed Root:</strong> <code>${current}</code></p>
-          <p><strong>Expected Root:</strong> <code>${targetRoot || "N/A"}</code></p>
-          <p>Verification failed fail-closed: leaf hash or reconstructed root diverges from expected commitment.</p>
-        </div>
-      `;
+    box.appendChild(h4);
+    box.appendChild(pLeaf);
+    box.appendChild(pRoot);
+    box.appendChild(pMsg);
+    outputBox.appendChild(box);
+  } else {
+    const box = document.createElement("div");
+    box.className = "result-box result-invalid";
+    const h4 = document.createElement("h4");
+    h4.textContent = "✕ INVALID: Cryptographic Verification Failed";
+
+    if (result.computedLeaf) {
+      const pLeaf = document.createElement("p");
+      pLeaf.innerHTML = `<strong>Computed Leaf Hash:</strong> <code>${escapeHtml(result.computedLeaf)}</code>`;
+      box.appendChild(pLeaf);
     }
-  } catch (err) {
-    outputBox.innerHTML = `<span class='text-red'>Verification exception: ${escapeHtml(err.message)}</span>`;
+    if (result.computedRoot) {
+      const pRoot = document.createElement("p");
+      pRoot.innerHTML = `<strong>Reconstructed Root:</strong> <code>${escapeHtml(result.computedRoot)}</code>`;
+      box.appendChild(pRoot);
+    }
+    if (result.expectedRoot) {
+      const pExp = document.createElement("p");
+      pExp.innerHTML = `<strong>Expected Trusted Root:</strong> <code>${escapeHtml(result.expectedRoot)}</code>`;
+      box.appendChild(pExp);
+    }
+    const pReason = document.createElement("p");
+    pReason.textContent = `Fail-closed verification failed: ${result.reason}`;
+    box.appendChild(h4);
+    box.appendChild(pReason);
+    outputBox.appendChild(box);
   }
 }
 
@@ -1251,6 +1642,8 @@ if (typeof module !== "undefined" && module.exports) {
     computeEvidenceId,
     verifyRecordSignature,
     verifyRecordDetails,
+    verifyInclusionProof,
+    expected_proof_directions,
     extractEd25519PubKey,
     decodeBase58,
     escapeHtml

@@ -118,11 +118,33 @@ def parse_iso_timestamp(ts_str: str) -> datetime.datetime | None:
         return None
 
 
+ROOM_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Prevent SSRF by rejecting redirects that leave the intended host."""
+
+    def __init__(self, allowed_host: str):
+        super().__init__()
+        self.allowed_host = allowed_host.lower()
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlparse(newurl)
+        if parsed.netloc and parsed.netloc.lower() != self.allowed_host:
+            raise urllib.error.HTTPError(
+                newurl, code, f"Cross-host redirect forbidden to {parsed.netloc}", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_url(url: str, timeout: float = DEFAULT_TIMEOUT) -> tuple[int, dict[str, str], bytes]:
     """
-    Perform a strictly read-only HTTP GET request.
+    Perform a strictly read-only HTTP GET request with SSRF redirect protection.
     Returns (status_code, headers_dict, body_bytes).
     """
+    parsed = urllib.parse.urlparse(url)
+    expected_host = parsed.netloc.lower()
+
     req = urllib.request.Request(
         url,
         headers={
@@ -131,7 +153,8 @@ def fetch_url(url: str, timeout: float = DEFAULT_TIMEOUT) -> tuple[int, dict[str
         },
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    opener = urllib.request.build_opener(SafeRedirectHandler(expected_host))
+    with opener.open(req, timeout=timeout) as resp:
         status_code = resp.status
         headers = {k.lower(): v for k, v in resp.headers.items()}
         body = resp.read()
@@ -161,7 +184,7 @@ def discover_public_rooms(
             for item in data["rooms"]:
                 if isinstance(item, dict) and "room" in item and isinstance(item["room"], str):
                     r_name = item["room"].strip()
-                    if r_name and r_name not in rooms:
+                    if r_name and ROOM_NAME_RE.match(r_name) and ".." not in r_name and r_name not in rooms:
                         rooms.append(r_name)
     except Exception:
         pass
@@ -178,7 +201,7 @@ def discover_public_rooms(
                 if line.startswith("/r/"):
                     parts = line.split()
                     room_name = parts[0][3:].strip()
-                    if room_name and room_name not in rooms:
+                    if room_name and ROOM_NAME_RE.match(room_name) and ".." not in room_name and room_name not in rooms:
                         rooms.append(room_name)
         except Exception:
             pass
@@ -196,7 +219,10 @@ def fetch_room_generation_and_export(
     Returns (generation, list_of_raw_line_bytes, endpoint_used).
     """
     base = base_url.rstrip("/")
-    export_url = f"{base}/r/{urllib.parse.quote(room)}/export"
+    clean_room = room.lstrip("#").strip()
+    if not ROOM_NAME_RE.match(clean_room) or ".." in clean_room or "/" in clean_room or "\\" in clean_room:
+        raise ValueError(f"Invalid room name: {room!r}")
+    export_url = f"{base}/r/{urllib.parse.quote(clean_room, safe='')}/export"
     generation: int | None = None
     lines: list[bytes] = []
 
@@ -302,9 +328,17 @@ def run_indexer(
     queried_endpoints: list[str] = []
     scanned_rooms: list[str] = []
 
+    if max_rooms < 1 or max_rooms > 50:
+        raise ValueError(f"max_rooms must be between 1 and 50, got {max_rooms}")
+
     # 2. Discover rooms
     if explicit_rooms:
-        scanned_rooms = [r.lstrip("#").strip() for r in explicit_rooms if r.strip()]
+        scanned_rooms = []
+        for r in explicit_rooms:
+            c = r.lstrip("#").strip()
+            if not c or not ROOM_NAME_RE.match(c) or ".." in c or "/" in c or "\\" in c:
+                raise ValueError(f"Invalid room name: {r!r}")
+            scanned_rooms.append(c)
     else:
         discovered, discovery_endpoints = discover_public_rooms(
             base_url=base_url,

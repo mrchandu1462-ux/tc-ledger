@@ -183,7 +183,9 @@ Completed:
 - JCS behavior verification
 - deterministic canonicalization test vectors
 
-Pending:
+Shipped (v0.2.0 - v0.4.0):
 
-- Merkle aggregation layer
-- anchor layer
+- Merkle aggregation layer (`export_merkle_root` over RFC 8785 canonical evidence IDs and raw export records)
+- Inclusion proofs and consistency proofs (v1)
+
+Historical context: External anchor/settlement layer is decoupled from the core format specification.

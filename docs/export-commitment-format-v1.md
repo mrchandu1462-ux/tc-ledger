@@ -316,8 +316,10 @@ Completed:
 - export commitment test vector
 - independent export vector reproduction
 
-Pending:
+Shipped (v0.2.0 - v0.4.0):
 
-- evidence ID to export leaf mapping
-- export verifier integration
-- anchor layer
+- Evidence ID and raw export record verification
+- Export verifier integration (`tc-ledger verify`, `tc-ledger verify-proof`)
+- Self-contained offline inclusion proof verification (Python engine and fail-closed browser verifier)
+
+Historical context: External anchor/settlement layer is decoupled from the core format specification.

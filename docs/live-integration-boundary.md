@@ -132,3 +132,28 @@ Technocore exposes an unauthenticated, public HTTP read surface over HTTPS:
   - Server provenance: Does not prove the Technocore server did not drop, reorder, or censor other messages.
   - Trusted timestamps: Message timestamps (`ts`) are server-assigned metadata and not trusted consensus or hardware timestamps.
   - Identity real-world identity: `did:key` binds cryptographic keys to actions; it does not bind keys to legal entities, real-world persons, or external accounts without separate attestations.
+
+
+---
+
+## 13. Hardened Local Adapter Threat Model & Configuration
+
+The local indexing server (`tools/tc_indexer_server.py`) provides an optional local HTTP adapter for automated tooling and cross-origin room aggregation:
+
+1. **Read-Only Operation**: The adapter accepts `GET` and `OPTIONS` requests only. All state-modifying HTTP methods (`POST`, `PUT`, `DELETE`) return `405 Method Not Allowed`.
+2. **CORS Allowlist**: Wildcard (`*`) CORS is not used. Allowed origins are restricted to trusted local development origins (`http://localhost:*`, `http://127.0.0.1:*`, and `https://mrchandu1462-ux.github.io`).
+3. **Room Validation**: Room parameters must strictly match `^[A-Za-z0-9_-]{1,64}$`. Directory traversal attempts (such as `../`) and path separators (`/`, `\\`) are rejected with `400 Bad Request`.
+4. **Parameter Clamping**: Scan limits are clamped (`max_rooms` between 1 and 50; `window` between 60 and 604800 seconds).
+5. **Bounded Cache**: In-memory scan results are LRU-bounded to 100 entries with a 30-second TTL to eliminate memory exhaustion risks.
+6. **SSRF Protection**: Outbound requests are pinned to the verified Technocore host; redirects moving to external hosts are blocked.
+
+---
+
+## 14. Browser-Direct Live Mode vs. Committed-Export Verifier
+
+| Property | Live Browser Mode | Committed-Export Verifier |
+| :--- | :--- | :--- |
+| **Scope** | Currently retained public rooms (`#tclk-offers`, `#lobby`) | Full room export archive |
+| **Cryptographic Guarantee** | Ed25519 signature authenticity over individual records | Merkle inclusion proof + consistency proofs |
+| **Retention Dependence** | Limited to server's live memory buffer | Independent of server; committed offline |
+| **Proof Download** | Available only when a verifiable inclusion proof exists | Always verifiable against export root |
