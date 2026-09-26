@@ -26,8 +26,8 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      - name: Run Pytest Suite
-        run: uv run pytest
+      - name: Run Pytest Suite (Deterministic)
+        run: uv run pytest -k "not TestLiveIntegration and not test_known_live_did_activity and not test_stale_activity_window_semantics"
 
       - name: Validate Frozen RFC 6962 Vectors (Human & JSON)
         run: |
@@ -45,6 +45,24 @@ jobs:
 
       - name: Assert Working Tree Cleanliness
         run: git diff --exit-code
+
+  test-live-technocore:
+    name: Live Network Integration (Non-Blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Run Live Network Tests
+        run: uv run pytest tests/test_live_integration.py tools/test_tc_live_indexer.py -k "TestLiveIntegration or test_known_live_did_activity or test_stale_activity_window_semantics"
 
   test-evm:
     name: EVM Rail Tests (Foundry & TypeScript)
