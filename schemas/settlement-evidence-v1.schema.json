@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrchandu1462-ux/tc-ledger/schemas/settlement-evidence-v1.schema.json",
+  "title": "Settlement Evidence v1",
+  "description": "JSON Schema for on-chain settlement evidence receipts (e.g. EVM HTLC escrows)",
+  "type": "object",
+  "required": [
+    "rail",
+    "contract_id",
+    "asset",
+    "amount",
+    "hashlock",
+    "settlement_status"
+  ],
+  "properties": {
+    "rail": {
+      "type": "string",
+      "description": "Settlement rail identifier (e.g. evm-htlc)"
+    },
+    "contract_id": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$|^[0-9a-fA-F]{64}$",
+      "description": "Canonical 32-byte tclk contract ID"
+    },
+    "contract_address": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^0x[0-9a-fA-F]{40}$",
+      "description": "EVM address of deployed HTLC escrow contract"
+    },
+    "asset": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$",
+      "description": "20-byte EVM token address or zero address for native ETH"
+    },
+    "amount": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "Atomic token or wei amount (decimal string)"
+    },
+    "hashlock": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$|^[0-9a-fA-F]{64}$",
+      "description": "32-byte SHA-256 hashlock hex string"
+    },
+    "settlement_status": {
+      "type": "string",
+      "enum": [
+        "locked",
+        "claimed",
+        "refunded",
+        "cancelled",
+        "unknown",
+        "claimed-on-rail",
+        "refunded-on-rail"
+      ],
+      "description": "Observed settlement status on rail"
+    },
+    "provenance": {
+      "type": "string",
+      "enum": [
+        "self_attested",
+        "rpc_receipt_verified",
+        "cryptographic_receipt_proof"
+      ],
+      "default": "self_attested",
+      "description": "Provenance model for settlement metadata"
+    },
+    "payer_address": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "payee_address": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "lock_timestamp": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "refund_timestamp": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "claim_timestamp": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "secret": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^0x[0-9a-fA-F]{64}$|^[0-9a-fA-F]{64}$"
+    },
+    "lock_tx": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "claim_tx": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "refund_tx": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "block_number": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "chain_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    }
+  },
+  "additionalProperties": true
+}

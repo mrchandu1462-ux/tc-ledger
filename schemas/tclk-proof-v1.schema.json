@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrchandu1462-ux/tc-ledger/schemas/tclk-proof-v1.schema.json",
+  "title": "TCLK Proof v1",
+  "description": "JSON Schema for TCLK cross-layer settlement and conformance proof artifacts",
+  "type": "object",
+  "required": [
+    "spec",
+    "version",
+    "contract_id",
+    "is_conformant",
+    "trust_model",
+    "agreement",
+    "transcript",
+    "settlement",
+    "cross_check",
+    "failure_reasons",
+    "warnings"
+  ],
+  "properties": {
+    "spec": {
+      "type": "string",
+      "const": "tclk-proof/1",
+      "description": "Specification version identifier"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Proof format version"
+    },
+    "profile": {
+      "type": "string",
+      "const": "tc-ledger/1",
+      "description": "Verification profile identifier"
+    },
+    "schema": {
+      "type": "string",
+      "const": "tc-ledger/tclk-proof/v1",
+      "description": "Schema URI identifier"
+    },
+    "contract_id": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$|^[0-9a-fA-F]{64}$",
+      "description": "Canonical 32-byte tclk/1 contract ID"
+    },
+    "room": {
+      "type": "string",
+      "description": "Technocore room identifier"
+    },
+    "is_conformant": {
+      "type": "boolean",
+      "description": "True only if agreement terms, transcript, and on-chain execution are all verified"
+    },
+    "trust_model": {
+      "type": "object",
+      "required": [
+        "transcript_authenticity",
+        "terms_conformance",
+        "on_chain_execution_proven",
+        "settlement_evidence_provenance"
+      ],
+      "properties": {
+        "transcript_authenticity": {
+          "type": "boolean"
+        },
+        "terms_conformance": {
+          "type": "boolean"
+        },
+        "on_chain_execution_proven": {
+          "type": "boolean"
+        },
+        "proves_transcript_signatures": {
+          "type": "boolean"
+        },
+        "proves_merkle_export_inclusion": {
+          "type": "boolean"
+        },
+        "proves_on_chain_blockchain_execution": {
+          "type": "boolean"
+        },
+        "settlement_evidence_provenance": {
+          "type": "string",
+          "enum": [
+            "self_attested",
+            "rpc_receipt_verified",
+            "cryptographic_receipt_proof"
+          ]
+        },
+        "notice": {
+          "type": "string"
+        }
+      }
+    },
+    "agreement": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "payer_did": {
+          "type": "string"
+        },
+        "payee_did": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "lock_kind": {
+          "type": "string"
+        },
+        "hashlock": {
+          "type": "string"
+        },
+        "claim_by_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "refund_after_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expires_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rails": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "required": [
+        "status",
+        "authenticity"
+      ],
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "authenticity": {
+          "type": "string"
+        },
+        "room": {
+          "type": "string"
+        },
+        "line_count": {
+          "type": "integer"
+        },
+        "frames_verified": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "export_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signatures_verified": {
+          "type": "boolean"
+        },
+        "merkle_inclusion_verified": {
+          "type": "boolean"
+        }
+      }
+    },
+    "settlement": {
+      "type": "object",
+      "required": [
+        "status",
+        "evidence_provenance",
+        "contract_id",
+        "asset",
+        "amount",
+        "hashlock"
+      ],
+      "properties": {
+        "rail": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "evidence_provenance": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string"
+        },
+        "contract_id": {
+          "type": "string"
+        },
+        "contract_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "asset": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "string"
+        },
+        "hashlock": {
+          "type": "string"
+        },
+        "payer_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payee_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lock_timestamp": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "refund_timestamp": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "claim_timestamp": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lock_tx": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "claim_tx": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refund_tx": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_revealed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "cross_check": {
+      "type": "object",
+      "required": [
+        "terms_conformance",
+        "contract_id_binding",
+        "hashlock_binding",
+        "amount_binding",
+        "asset_binding",
+        "temporal_ordering",
+        "secret_verification",
+        "on_chain_provenance",
+        "address_binding"
+      ],
+      "properties": {
+        "terms_conformance": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "failed"
+          ]
+        },
+        "contract_id_binding": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "mismatch",
+            "missing"
+          ]
+        },
+        "hashlock_binding": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "mismatch",
+            "missing"
+          ]
+        },
+        "amount_binding": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "mismatch",
+            "missing"
+          ]
+        },
+        "asset_binding": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "mismatch",
+            "missing"
+          ]
+        },
+        "secret_verification": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "mismatch",
+            "missing",
+            "not_applicable"
+          ]
+        },
+        "temporal_ordering": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "invalid_ordering",
+            "claim_too_late",
+            "lock_too_late",
+            "missing_timestamps"
+          ]
+        },
+        "on_chain_provenance": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "unverified"
+          ]
+        },
+        "address_binding": {
+          "type": "string",
+          "enum": [
+            "verified_via_payment_key",
+            "unverified_external_mapping",
+            "mismatch",
+            "not_applicable"
+          ]
+        },
+        "settlement_lifecycle": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "inconsistent"
+          ]
+        },
+        "address_binding_payer": {
+          "type": "string",
+          "enum": [
+            "verified_via_payment_key",
+            "unverified_external_mapping",
+            "mismatch",
+            "not_applicable"
+          ]
+        },
+        "address_binding_payee": {
+          "type": "string",
+          "enum": [
+            "verified_via_payment_key",
+            "unverified_external_mapping",
+            "mismatch",
+            "not_applicable"
+          ]
+        }
+      }
+    },
+    "failure_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

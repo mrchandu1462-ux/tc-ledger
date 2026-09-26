@@ -1582,6 +1582,25 @@ def main() -> int:
     verify_consistency_parser.add_argument("--expected-new-tree-size", "--expected-new-size", type=int, help="expected subsequent export tree size")
     verify_consistency_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
 
+
+    cross_parser = subparsers.add_parser(
+        "cross-verify",
+        help="verify signed Technocore agreements against verifiable settlement evidence",
+    )
+    cross_parser.add_argument("transcript", help="path to room export (.jsonl) or DealArchive (.json)")
+    cross_parser.add_argument("settlement", nargs="?", default=None, help="path to settlement evidence (.json)")
+    cross_parser.add_argument("--rpc-url", help="EVM JSON-RPC endpoint URL")
+    cross_parser.add_argument("--lock-tx", help="On-chain lock transaction hash to verify")
+    cross_parser.add_argument("--claim-tx", help="On-chain claim transaction hash to verify")
+    cross_parser.add_argument("--refund-tx", help="On-chain refund transaction hash to verify")
+    cross_parser.add_argument("--htlc-address", help="Expected HTLC contract address")
+    cross_parser.add_argument("--chain-id", type=int, help="Expected EVM network chain ID (e.g. 1, 31337)")
+    cross_parser.add_argument("--room", help="expected room identifier")
+    cross_parser.add_argument("--expected-root", help="expected room export Merkle root")
+    cross_parser.add_argument("--expected-contract-id", help="expected contract ID")
+    cross_parser.add_argument("--output", help="optional output file path for proof artifact")
+    cross_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
+
     args = parser.parse_args()
     is_json = getattr(args, "json", False)
 
@@ -1995,6 +2014,69 @@ def main() -> int:
                 print(f"VERIFY-CONSISTENCY: INVALID ({res.get('error')})", file=sys.stderr)
 
         return 0 if valid else 1
+
+
+    if args.command == "cross-verify":
+        from tc_ledger.cross_verify import verify_cross_layer
+        trust_anchors = {
+            "room": args.room,
+            "expected_root": args.expected_root,
+            "expected_contract_id": args.expected_contract_id,
+        }
+        rpc_anchors = None
+        if getattr(args, "rpc_url", None):
+            rpc_anchors = {
+                "rpc_url": args.rpc_url,
+                "lock_tx": getattr(args, "lock_tx", None),
+                "claim_tx": getattr(args, "claim_tx", None),
+                "refund_tx": getattr(args, "refund_tx", None),
+                "htlc_address": getattr(args, "htlc_address", None),
+                "chain_id": getattr(args, "chain_id", None),
+            }
+        try:
+            proof = verify_cross_layer(
+                transcript_source=args.transcript,
+                settlement_source=args.settlement,
+                trust_anchors=trust_anchors,
+                rpc_anchors=rpc_anchors,
+            )
+        except Exception as exc:
+            if is_json:
+                print(json.dumps({"valid": False, "error": str(exc)}, indent=2))
+            else:
+                print(f"Runtime Error: {exc}", file=sys.stderr)
+            return 3
+
+        if args.output:
+            try:
+                out_p = Path(args.output)
+                out_p.parent.mkdir(parents=True, exist_ok=True)
+                out_p.write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
+            except Exception as exc:
+                if is_json:
+                    print(json.dumps({"valid": False, "error": f"Failed to write output: {exc}"}, indent=2))
+                else:
+                    print(f"I/O Error writing output: {exc}", file=sys.stderr)
+                return 3
+
+        is_conformant = proof.get("is_conformant", False)
+        if is_json:
+            print(json.dumps(proof, indent=2))
+        else:
+            if is_conformant:
+                print("CROSS-VERIFICATION: CONFORMANT (SUCCESS)")
+                print(f"Contract ID: {proof.get('contract_id')}")
+                print(f"Room:        {proof.get('room')}")
+                print(f"Amount:      {proof.get('agreement', {}).get('amount')}")
+                print(f"Asset:       {proof.get('agreement', {}).get('asset')}")
+                print(f"Hashlock:    {proof.get('agreement', {}).get('hashlock')}")
+                print(f"Settlement:  {proof.get('settlement', {}).get('status')}")
+            else:
+                print("CROSS-VERIFICATION: NON-CONFORMANT (FAILED)", file=sys.stderr)
+                for reason in proof.get("failure_reasons", []):
+                    print(f"  - Failure: {reason}", file=sys.stderr)
+
+        return 0 if is_conformant else 1
 
     if args.command == "verify":
         try:

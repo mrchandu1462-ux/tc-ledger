@@ -1,0 +1,86 @@
+{
+  "spec": "tclk-proof/1",
+  "version": 1,
+  "profile": "tc-ledger/1",
+  "schema": "tc-ledger/tclk-proof/v1",
+  "contract_id": "0x326a600f694ef319b533e80e3c06c680c99f4e07a011d11d199b692cdb548eef",
+  "room": "anvil_demo_room",
+  "agreement": {
+    "status": "verified",
+    "payer_did": "did:key:z6Mkt63BxTZio2g7YG9pVyKaoffRi8PcQ4QUmv4zB8DjkowL",
+    "payee_did": "did:key:z6MkgL9R32aLPEtfZJTLdauSNnbsGccMZAcAuzwv4jyZD2y4",
+    "amount": "1000000000000000",
+    "asset": "0x0000000000000000000000000000000000000000",
+    "lock_kind": "hash",
+    "hashlock": "0x425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c",
+    "claim_by_ms": 1790432023000,
+    "refund_after_ms": 1790432023000,
+    "expires_ms": 1790432623000,
+    "rails": [
+      "evm-htlc"
+    ]
+  },
+  "transcript": {
+    "status": "complete",
+    "authenticity": "verified",
+    "room": "anvil_demo_room",
+    "line_count": 2,
+    "frames_verified": [
+      "offer",
+      "accept"
+    ],
+    "export_root": "4a7c6632cda05d324d1476014935fc58742455d8231538f2019328eaef97befe",
+    "signatures_verified": true,
+    "merkle_inclusion_verified": true
+  },
+  "settlement": {
+    "rail": "evm-htlc",
+    "status": "claimed",
+    "evidence_provenance": "rpc_receipt_verified",
+    "provenance": "rpc_receipt_verified",
+    "contract_id": "0x326a600f694ef319b533e80e3c06c680c99f4e07a011d11d199b692cdb548eef",
+    "contract_address": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+    "asset": "0x0000000000000000000000000000000000000000",
+    "amount": "1000000000000000",
+    "hashlock": "0x425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c",
+    "payer_address": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "payee_address": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    "lock_timestamp": null,
+    "refund_timestamp": 1790432023,
+    "claim_timestamp": null,
+    "lock_tx": "0x07d3fc1ef9af7e68ea83b437675798c53a33dc8738f1a7ca655ea7ef3097c694",
+    "claim_tx": "0xa4f6a81ff4157e25984e02583a2f2f14b413e5cd171b02ae60b2e40cef3dfb34",
+    "refund_tx": null,
+    "secret_revealed": "0x4242424242424242424242424242424242424242424242424242424242424242"
+  },
+  "cross_check": {
+    "terms_conformance": "verified",
+    "contract_id_binding": "verified",
+    "hashlock_binding": "verified",
+    "amount_binding": "verified",
+    "asset_binding": "verified",
+    "temporal_ordering": "verified",
+    "secret_verification": "verified",
+    "on_chain_provenance": "verified",
+    "address_binding": "unverified_external_mapping",
+    "settlement_lifecycle": "verified",
+    "address_binding_payer": "unverified_external_mapping",
+    "address_binding_payee": "unverified_external_mapping"
+  },
+  "trust_model": {
+    "transcript_authenticity": true,
+    "terms_conformance": true,
+    "on_chain_execution_proven": true,
+    "proves_transcript_signatures": true,
+    "proves_merkle_export_inclusion": true,
+    "proves_on_chain_blockchain_execution": true,
+    "settlement_evidence_provenance": "rpc_receipt_verified",
+    "notice": "Cross-verification proves semantic conformance between transcript and settlement JSON. It does NOT independently prove that settlement transactions were mined on-chain unless cryptographic on-chain receipt proofs are verified."
+  },
+  "is_conformant": true,
+  "failure_reasons": [],
+  "warnings": [
+    "payer DID (did:key:z6Mkt63BxTZio2g7YG9pVyKaoffRi8PcQ4QUmv4zB8DjkowL) to EVM address (0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266) is an unverified external mapping",
+    "payee DID (did:key:z6MkgL9R32aLPEtfZJTLdauSNnbsGccMZAcAuzwv4jyZD2y4) to EVM address (0x70997970c51812dc3a010c7d01b50e0d17dc79c8) is an unverified external mapping"
+  ]
+}

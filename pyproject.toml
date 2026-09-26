@@ -30,6 +30,7 @@ Issues = "https://github.com/mrchandu1462-ux/tc-ledger/issues"
 
 [project.scripts]
 tc-ledger = "tc_ledger.ledger:main"
+tclk-proof = "tc_ledger.cross_verify:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

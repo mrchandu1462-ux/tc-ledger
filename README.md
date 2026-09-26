@@ -1,263 +1,217 @@
-# tc-ledger
+# tc-ledger & TC Verify (`tclk-proof`)
 
-**A reproducible, self-contained evidence verification layer and explorer for Technocore room exports.**
+**A reproducible, self-contained cryptographic evidence and cross-layer settlement verification engine for Technocore (TCLK) agreements and EVM HTLC settlement rails.**
 
-[![CI](https://github.com/mrchandu1462-ux/tc-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/mrchandu1462-ux/tc-ledger/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python: 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
-
-Technocore servers retain and emit raw JSONL exports of room conversations containing Ed25519-signed messages from decentralized identifiers (`did:key:z...`). However, consumers and counterparties need a way to verify the authenticity of signed records, commit to exact export contents, prove that individual records are included in an export, and verify those proofs offline without network access or downloading full exports.
-
-tc-ledger bridges this gap by turning signed JSONL exports into deterministic cryptographic commitments, Merkle completeness trees, self-contained inclusion and consistency proofs, and providing a public Explorer for discovery and client-side cryptographic inspection.
+[![Specification: RFC 8785 (JCS) / RFC 6962](https://img.shields.io/badge/spec-RFC%208785%20%7C%20RFC%206962-green)](#)
 
 ---
 
-## Project Independence & Disclaimer
+## Table of Contents
 
-> [!NOTE]
-> **Independent Project**: TC-Ledger is an independent, open-source project and is **not affiliated with, endorsed by, or sponsored by Technocore or Flop Labs**.
->
-> All live network interactions are strictly **read-only** against publicly accessible HTTP endpoints. TC-Ledger does not post messages, issue write requests, generate server rooms, publish DIDs, or require API credentials.
-
----
-
-## Critical Trust Boundary & Retention Limits
-
-> [!IMPORTANT]
-> **What TC-Ledger Proves vs. Server Retention:**
-> 1. **Exact Retained Export Bytes**: TC-Ledger proves the exact physical bytes of exports supplied to it. It does **not** prove complete lifetime room history, nor does it recover deleted or evicted history.
-> 2. **Append-Only Consistency Proofs (C7)**: A consistency proof proves that a later committed export tree contains the earlier tree as its **exact, unaltered prefix**. C7 guarantees append-only progression of retained logs.
-> 3. **Retention and Eviction Failure**: If a Technocore server evicts or prunes older messages under retention limits before generating a later export, the prefix relationship is broken. In this case, consistency verification **will and must FAIL** rather than falsely asserting continuity.
-> 4. **No "Tamper-Proof" Claims**: Mathematical commitments detect tampering; they do not physically prevent modification or deletion of untrusted server storage.
-> 5. **No Trusted Timestamping**: Timestamps inside record payloads (`ts`) are self-reported by authors or servers. TC-Ledger verifies signature integrity over the payload string, but makes no claim of trusted third-party timestamping or monotonic time enforcement.
-> 6. **No Server Provenance Claims**: Technocore exports currently lack server-side signatures. TC-Ledger proves author Ed25519 signatures and exact byte commitments, but does not attest to server origin.
-> 7. **Live Verification Depends on Trusted Inputs**: Live discovery and indexer results reflect only the specific public rooms and export streams inspected at query time.
-> 8. **Durable Preservation Required**: TC-Ledger verifies mathematical commitments; it does not store history. Retained export files and trust anchors must be durably preserved by an archiver or participant for subsequent verification.
-> 9. **Metadata Envelope Trust Boundaries**: Artifact metadata fields (`room`, `old_generation`, `new_generation`, `old_tree_size`, `new_tree_size`) are self-attested envelope properties. Cryptographic authentication requires validating them against caller-specified trust anchors (`--expected-*`).
+1. [Overview](#overview)
+2. [Threat & Trust Model](#threat--trust-model)
+3. [Architecture & Pipeline](#architecture--pipeline)
+4. [Settlement Evidence Provenance Levels](#settlement-evidence-provenance-levels)
+5. [CLI Usage](#cli-usage)
+6. [End-to-End Local Anvil Demonstration](#end-to-end-local-anvil-demonstration)
+7. [Test Results & Verification](#test-results--verification)
+8. [Current Limitations & Future Roadmap](#current-limitations--future-roadmap)
+9. [License](#license)
 
 ---
 
-## TC-Ledger Explorer & Live Discovery
+## Overview
 
-The **TC-Ledger Explorer** provides an interactive interface for discovering retained public activity for decentralized identifiers (`did:key:z...`), inspecting retained messages, and performing client-side Ed25519 verification.
+Technocore (`tclk/1`) rooms enable counterparties to negotiate cryptographic financial agreements via Ed25519-signed messages (`did:key:z...`). **TC Verify** (`tclk-proof` / `tc-ledger cross-verify`) bridges signed off-chain negotiation transcripts with on-chain Hash Time-Locked Contract (HTLC) execution on EVM blockchains without third-party RPC libraries or heavy client runtimes.
 
-* **Live Deployed Explorer**: [https://mrchandu1462-ux.github.io/tc-ledger/explorer.html](https://mrchandu1462-ux.github.io/tc-ledger/explorer.html)
-* **Showcase Site**: [https://mrchandu1462-ux.github.io/tc-ledger/](https://mrchandu1462-ux.github.io/tc-ledger/)
-
-### Operating Modes
-
-1. **Live Technocore Mode**: Queries live, publicly readable Technocore room export streams (such as `#tclk-offers` and `#lobby`) directly in the browser via CORS or through a local read-only indexer adapter. Every record signature is cryptographically verified on the client using WebCrypto / Ed25519.
-2. **Synthetic Demo Mode**: Provides an offline, isolated sandbox demonstrating active (`Bob`), stale (`Alice`), and nonexistent identity states using fixed synthetic fixtures without making network calls.
-
-### Activity Status Semantics
-
-The Explorer uses strict, honest activity indicators:
-* **ACTIVE**: Recent cryptographically verified activity was observed within the analysis window (e.g. past 24 hours). **This indicates verified activity only; it does NOT imply online presence, active sockets, or heartbeat availability.**
-* **STALE**: Verified activity was observed historically for this DID, but falls outside the recent activity window. **This indicates elapsed time since last verified message; it does NOT mean the agent is offline.**
-* **NO DATA FOUND**: No verified activity for the DID was observed in currently inspected public retained streams. **This indicates absence of data in the inspected dataset; it does NOT mean the DID does not exist.**
-
-**Zero Silent Fallback**: Live query failures, unreachable rooms, or unobserved DIDs never silently fall back to synthetic demo data.
+TC Verify produces canonical machine-readable proof artifacts (`tclk-proof/1`) validating:
+- **Transcript Authenticity**: Ed25519 signature validation and RFC 6962 Merkle tree root commitments.
+- **Agreement Reconstruction**: Deterministic contract ID derivation over canonical JCS JSON (RFC 8785) offer/accept frames.
+- **On-Chain Settlement Provenance**: Direct JSON-RPC receipt evaluation of `Locked`, `Claimed`, and `Refunded` events emitted by `Htlc.sol`.
+- **Cross-Layer Semantic Conformance**: Exact equality checks for contract ID, asset/token, amount, SHA-256 hashlock, preimage reveal, payer/payee addresses, and temporal deadlines.
 
 ---
 
-## Architecture Overview
+## Threat & Trust Model
 
+TC Verify enforces a strict, fail-closed trust hierarchy:
+
+```
+┌────────────────────────────────────────────────────────┐
+│               SETTLEMENT EVIDENCE SOURCE               │
+└───────────────────────────┬────────────────────────────┘
+                            │
+            ┌───────────────┴───────────────┐
+            ▼                               ▼
+  Unverified Caller JSON          Active JSON-RPC Receipts
+  (Filesystem / Dict Input)       (fetch_transaction_receipt)
+            │                               │
+            ▼                               ▼
+ forced: "self_attested"         set: "rpc_receipt_verified"
+            │                               │
+            ▼                               ▼
+ on_chain_execution_proven=False  on_chain_execution_proven=True
+            │                               │
+            ▼                               ▼
+   is_conformant=False             is_conformant=True
+  (Terminal Non-Conformant)       (Eligible for Conformant)
+```
+
+### Core Security Guarantees
+
+1. **Unverified Caller JSON Cannot Forge On-Chain Execution**:
+   - Any external `settlement.json` supplied by a user is forced to `provenance: "self_attested"`.
+   - Even if the caller sets `"provenance": "rpc_receipt_verified"` in their JSON, the verifier downgrades it to `self_attested` and emits `is_conformant: false`.
+2. **Mandatory Chain ID Trust Anchor**:
+   - When RPC verification is requested, the caller must supply `--chain-id` (or `trust_anchors["chain_id"]`). Mismatched or omitted chain IDs fail closed immediately, preventing cross-chain replay attacks.
+3. **Mandatory Lock Receipt**:
+   - Evaluating a `claim_tx` or `refund_tx` requires the corresponding `lock_tx` receipt to authenticate escrow parameters (`amount`, `token`, `payer`, `payee`, `hashlock`, and `refundTimestamp`) directly from the on-chain `Locked` event log.
+4. **Strict Receipt & Event Validation**:
+   - Receipts must have `status == 0x1` (non-reverted).
+   - Queried transaction hashes must match `receipt.transactionHash`.
+   - Contract addresses and log emitters must match the expected HTLC contract.
+   - Ambiguous or duplicate events fail closed.
+
+---
+
+## Architecture & Pipeline
+
+```
+ signed transcript (.jsonl)
+           │
+           ▼
+ ┌───────────────────┐
+ │ parse_export_lines│ ──► Verify Ed25519 signatures & RFC 6962 Merkle tree
+ └─────────┬─────────┘
+           │ (Reconstruct canonical AgreementState)
+           ▼
+ ┌───────────────────┐
+ │   JSON-RPC EVM    │ ──► Fetch mined receipts: lock_tx, claim_tx, refund_tx
+ │     Verifier      │ ──► Parse & validate Locked(..) / Claimed(..) events
+ └─────────┬─────────┘ ──► Extract on-chain contractId, asset, amount, secret
+           │
+           ▼
+ ┌───────────────────┐
+ │verify_cross_layer │ ──► Validate semantic equality between transcript & EVM
+ └─────────┬─────────┘ ──► Verify sha256(secret) == hashlock & temporal order
+           │
+           ▼
+    proof.json (tclk-proof/1 schema conformant)
+```
+
+---
+
+## Settlement Evidence Provenance Levels
+
+| Provenance Level | Description | `on_chain_execution_proven` | `is_conformant` Eligible |
+| :--- | :--- | :---: | :---: |
+| `self_attested` | Unauthenticated JSON supplied by caller without active RPC validation. | `false` | **`false`** |
+| `rpc_receipt_verified` | Verified against active EVM JSON-RPC provider (receipt status, address, logs, chain ID). | `true` | **`true`** (if terms match) |
+| `cryptographic_receipt_proof` | Trustless Merkle-Patricia Trie inclusion proof against block headers *(future phase)*. | `true` | **`true`** |
+
+---
+
+## CLI Usage
+
+TC Verify provides both flag-based and positional CLI entrypoints:
+
+```bash
+# Verify against live EVM JSON-RPC provider
+uv run tclk-proof verify \
+  --transcript transcript.jsonl \
+  --rpc-url http://127.0.0.1:8545 \
+  --lock-tx 0x83480e992a920825f88a38110bd5a60000cf2792fa9e312d977003ebe61cbc0f \
+  --claim-tx 0x4bd4883432d7556eb8e6dca5c4971e0b59d40b8c0fd7cf9a702e259fdc0fc023 \
+  --htlc-address 0x5fbdb2315678afecb367f032d93f642f64180aa3 \
+  --chain-id 31337 \
+  --output proof.json
+
+# Check semantic conformance against static settlement JSON (self-attested)
+uv run tclk-proof transcript.jsonl settlement.json --output proof.json
+
+# Integrated tc-ledger subparser
+uv run tc-ledger cross-verify transcript.jsonl --rpc-url http://127.0.0.1:8545 --lock-tx 0x... --claim-tx 0x... --chain-id 31337
+```
+
+---
+
+## End-to-End Local Anvil Demonstration
+
+Run the automated, self-contained local Anvil integration demo:
+
+```bash
+uv run python examples/e2e_tclk_proof.py
+```
+
+### Output:
 ```text
-               +--------------------------------------------------+
-               |            Public Technocore Endpoints           |
-               |  GET /r/<room>/export | GET /r/<room>?format=json|
-               +--------------------------------------------------+
-                                        | (Read-Only HTTP / CORS)
-                                        v
-     +-----------------------------------------------------------------------+
-     |                       Discovery & Presentation                        |
-     |                                                                       |
-     |   +--------------------------+      +-----------------------------+   |
-     |   |   Live Indexer CLI       |      |    TC-Ledger Explorer       |   |
-     |   | (tools/tc_live_indexer)  |      |   (site/explorer.html/.js)  |   |
-     |   +--------------------------+      +-----------------------------+   |
-     |                 |                                  |                  |
-     |                 +--------------+    +--------------+                  |
-     |                                |    |                                 |
-     |                                v    v                                 |
-     |              Client-Side Ed25519 Signature Verification               |
-     |              (RFC 8785 JCS payload: room|nonce|text)                  |
-     +-----------------------------------------------------------------------+
-                                        |
-                                        v
-     +-----------------------------------------------------------------------+
-     |                   Frozen Cryptographic Core (v0.3.1)                  |
-     |                                                                       |
-     |       Record Verification (Ed25519, did:key multicodec 0xed01)        |
-     |                                  |                                    |
-     |            RFC 8785 JCS Deterministic Evidence Commitment             |
-     |                                  |                                    |
-     |               Byte-Exact Physical Export Line Hashing                 |
-     |                                  |                                    |
-     |             RFC 6962 Merkle Tree Roots (0x00 / 0x01)                  |
-     |                                  |                                    |
-     |          Export Inclusion Proofs (v1) & Leaf Audit Paths              |
-     |                                  |                                    |
-     |         Cross-Generation Append-Only Consistency Proofs (C7)          |
-     |                                  |                                    |
-     |        Self-Contained Offline Verifier & Smart Contract Anchors       |
-     +-----------------------------------------------------------------------+
+TCLK-PROOF E2E DEMO
+===================
+
+Transcript:
+  signatures              ✓
+  Merkle commitment       ✓
+
+Agreement:
+  contract ID             ✓
+
+EVM:
+  lock receipt             ✓
+  claim receipt            ✓
+  contract binding         ✓
+  hashlock binding         ✓
+  amount binding           ✓
+  asset binding            ✓
+  secret verification      ✓
+  temporal ordering        ✓
+  chain ID                 ✓
+
+Result:
+  CONFORMANT ✓
 ```
+
+Canonical proof artifacts are generated at `examples/output/proof.json`.
 
 ---
 
-## Read-Only Live Indexer CLI & Local Adapter
+## Test Results & Verification
 
-TC-Ledger provides read-only command-line tools for discovering and indexing public Technocore activity.
+### Test Suites
 
-### Running the Live Indexer CLI
+1. **Python Cross-Verification, EVM Verifier & Live Anvil Suite**:
+   ```bash
+   uv run pytest tests/test_cross_verify.py tests/test_evm_verifier.py tests/test_e2e_tclk_proof.py -v
+   ```
+   `50 passed in 11.24s`
 
-```bash
-# Discover activity for a DID across seed rooms
-uv run python tools/tc_live_indexer.py --did did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z
+2. **Full Repository Python Suite**:
+   ```bash
+   uv run pytest -q -k "not TestLiveIntegration and not test_known_live_did_activity and not test_stale_activity_window_semantics"
+   ```
+   `260 passed, 11 deselected in 19.14s`
 
-# Discover activity across specific rooms with a custom activity window
-uv run python tools/tc_live_indexer.py \
-  --did did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z \
-  --rooms tclk-offers,lobby \
-  --window-hours 48.0
-
-# Output machine-readable JSON report or save artifact
-uv run python tools/tc_live_indexer.py \
-  --did did:key:z6MkeiVea5Ddez5iBkSk5uc7AC48govcd977ysAWeu6FXT8Z \
-  --json \
-  --output live_index.json
-```
-
-### Running the Local Indexer Server
-
-The optional local adapter server runs on `http://127.0.0.1:8088` and provides a read-only CORS proxy for full room enumeration:
-
-```bash
-# Start local read-only adapter
-uv run python tools/tc_indexer_server.py --port 8088
-```
+3. **EVM Settlement Rail TypeScript / Vitest Suite**:
+   ```bash
+   cd tclk-rail-evm && npx vitest run
+   ```
+   `8 test files passed, 140 tests passed in 97.84s`
 
 ---
 
-## Machine-Readable CLI Contract
+## Current Limitations & Future Roadmap
 
-tc-ledger provides a stable CLI contract with machine-readable `--json` output and standardized process exit codes.
-
-### Process Exit Codes
-
-* 0: **Success / Valid** (Verification passed, operation succeeded)
-* 1: **Verification Failure** (Cryptographic verification failed, invalid evidence or proof)
-* 2: **Usage Error** (Invalid syntax or missing required mutual flags)
-* 3: **I/O / Runtime Error** (File not found, parse failure, runtime data error)
-
-### CLI Reference
-
-```bash
-# 1. Verify signatures across an export
-tc-ledger verify <path.jsonl> --room <room> [--json]
-
-# 2. Commit export bytes and bind generation epoch
-tc-ledger commit <path.jsonl> --room <room> [--generation <int>] [--output <commitment.json>] [--json]
-
-# 3. Validate frozen test vectors
-tc-ledger vectors [--json]
-
-# 4. Generate inclusion proof for a leaf
-tc-ledger prove <path.jsonl> --room <room> --leaf-index <int> [--generation <int>] [--output <proof.json>] [--json]
-
-# 5. Verify inclusion proof offline
-tc-ledger verify-proof <proof.json> --record <record.bin> --expected-root <hex> --expected-room <room> [--expected-generation <int>] [--json]
-
-# 6. Verify and re-derive commitment artifact
-tc-ledger verify-artifact <path.jsonl> <commitment.json> --expected-root <hex> --expected-room <room> [--expected-generation <int>] [--json]
-
-# 7. Generate cross-generation consistency proof
-tc-ledger consistency-proof <old-export.jsonl> <new-export.jsonl> --room <room> --old-generation <int> --new-generation <int> [--output <proof.json>] [--json]
-
-# 8. Verify cross-generation consistency proof
-tc-ledger verify-consistency <consistency_proof.json> [--expected-room <room>] [--expected-old-generation <int>] [--expected-new-generation <int>] [--expected-old-root <hex>] [--expected-new-root <hex>] [--expected-old-tree-size <int>] [--expected-new-tree-size <int>] [--json]
-```
-
-Full CLI documentation is available in [docs/cli-contract-v1.md](docs/cli-contract-v1.md).
-
----
-
-## Reproducible Example Walkthrough
-
-A fully reproducible, read-only demonstration is provided in [examples/](examples):
-
-```bash
-# Run the automated end-to-end demo (executes read-only without modifying repo)
-uv run python examples/demo.py
-```
-
-### Manual Verification Flow
-
-```bash
-# 1. Verify signatures in the synthetic export
-uv run tc-ledger verify examples/synthetic_export.jsonl --room demo-room
-
-# 2. Re-derive and verify the commitment artifact
-uv run tc-ledger verify-artifact examples/synthetic_export.jsonl examples/commitment.json \
-  --expected-room demo-room \
-  --expected-root 0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9 \
-  --expected-generation 1
-
-# 3. Verify the inclusion proof offline against raw record bytes
-uv run tc-ledger verify-proof examples/proof_leaf1.json \
-  --record examples/record_1.bin \
-  --expected-root 0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9 \
-  --expected-room demo-room \
-  --expected-generation 1
-
-# 4. Verify cross-generation consistency proof
-uv run tc-ledger verify-consistency examples/consistency_proof.json \
-  --expected-room demo-room \
-  --expected-old-generation 1 \
-  --expected-new-generation 2 \
-  --expected-old-root 0373cfc78e0b17cd733fd38318af51e119ef366954b0a0fbcba251ef15b066b9 \
-  --expected-old-tree-size 4 \
-  --expected-new-tree-size 7
-```
-
----
-
-## JSON Schemas & Conformance Vectors
-
-* **Schemas**: Formal JSON Schemas are maintained in [schemas/](schemas):
-  * `schemas/export-commitment-v1.schema.json`
-  * `schemas/inclusion-proof-v1.schema.json`
-  * `schemas/consistency-proof-v1.schema.json`
-  * `schemas/evidence-v1.schema.json`
-* **Conformance Vectors**: Comprehensive test vectors are located in `vectors/vectors.json` and `vectors/conformance.json`.
-
----
-
-## Testing & Verification
-
-All test suites and vectors pass against the codebase:
-
-```bash
-# 1. Python unit, integration, and conformance tests (205 passed)
-uv run pytest tests/
-
-# 2. Live Technocore indexer test suite (9 passed)
-uv run pytest tools/test_tc_live_indexer.py
-
-# 3. Frozen vector CLI validation (C3 vectors: OK)
-uv run tc-ledger vectors
-uv run tc-ledger vectors --json
-
-# 4. EVM Smart Contract Foundry test suite (33 passed)
-cd tclk-rail-evm && forge test
-
-# 5. TypeScript rail integration test suite (140 passed across 8 suites)
-cd tclk-rail-evm && npm test
-```
+1. **RPC Provider Trust Anchor**:
+   - `rpc_receipt_verified` establishes that a given EVM JSON-RPC provider returned valid, mined transaction receipts matching the HTLC contract address, non-reverted status (`0x1`), expected topics, and chain ID.
+   - It assumes the connected JSON-RPC endpoint is non-adversarial.
+2. **Future Phase — Cryptographic Block Header Inclusion (`cryptographic_receipt_proof`)**:
+   - Future extensions will add standalone Merkle-Patricia Trie inclusion proofs against Ethereum block headers, eliminating RPC provider trust completely.
+3. **DID-to-Ethereum Address Binding**:
+   - When agreements omit secp256k1 `paymentKey` fields, DID-to-address bindings emit non-blocking `unverified_external_mapping` warnings while verifying semantic terms conformance and on-chain execution.
 
 ---
 
 ## License
 
-This project is licensed under the [Apache License, Version 2.0](LICENSE).
+Licensed under the [Apache License, Version 2.0](LICENSE).

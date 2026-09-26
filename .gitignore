@@ -1,6 +1,31 @@
+# Python
 .venv/
 __pycache__/
-*.pyc
-data/
-*.seed
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local & Secrets
 .env
+.env.*
+*.seed
+*.pem
+*.key
+data/
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Node / TypeScript / Foundry
+node_modules/
+tclk-rail-evm/node_modules/
+tclk-rail-evm/dist/
+tclk-rail-evm/cache/
