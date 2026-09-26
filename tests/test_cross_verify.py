@@ -18,7 +18,9 @@ from tc_ledger.cross_verify import (
     domain_hash,
     secp256k1_pubkey_to_address,
     verify_cross_layer,
+    verify_standalone_proof,
     format_verification_report,
+    load_tclk_proof_schema,
     main as cross_verify_main,
 )
 from tc_ledger.ledger import main as ledger_main
@@ -897,3 +899,342 @@ def test_cli_exit_code_contract_rpc_configuration_errors(mock_deal_environment, 
     parsed_l = json.loads(cap_ledger.out)
     assert parsed_l["valid"] is False
     assert "chain_id" in parsed_l["error"]
+
+
+# --- Standalone Offline Proof Verification Tests (verify-proof) ---
+
+def test_standalone_proof_valid_canonical(capsys):
+    """Test standalone verification of valid canonical proof artifact."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    assert proof_path.is_file()
+
+    # 1. Python API verification
+    res = verify_standalone_proof(proof_path)
+    assert res["valid"] is True
+    assert res["is_conformant"] is True
+    assert res["schema_valid"] is True
+    assert res["cryptographic_validity"] is True
+    assert res["provenance"] == "rpc_receipt_verified"
+    assert len(res["failure_reasons"]) == 0
+
+    # 2. CLI tclk-proof verify-proof -> exit 0
+    ret_cli = cross_verify_main(["verify-proof", str(proof_path)])
+    cap_cli = capsys.readouterr()
+    assert ret_cli == 0
+    assert "STANDALONE PROOF VERIFICATION: CONFORMANT (SUCCESS)" in cap_cli.out
+
+    # 3. CLI tclk-proof verify-proof --json -> exit 0
+    ret_json = cross_verify_main(["verify-proof", str(proof_path), "--json"])
+    cap_json = capsys.readouterr()
+    assert ret_json == 0
+    parsed_json = json.loads(cap_json.out)
+    assert parsed_json["is_conformant"] is True
+    assert parsed_json["valid"] is True
+
+    # 4. CLI tclk-proof verify-proof --report -> exit 0
+    ret_rep = cross_verify_main(["verify-proof", str(proof_path), "--report"])
+    cap_rep = capsys.readouterr()
+    assert ret_rep == 0
+    assert "TCLK-PROOF VERIFICATION REPORT" in cap_rep.out
+    assert "FINAL CONFORMITY VERDICT: [OK] PASS: CONFORMANT" in cap_rep.out
+
+
+def test_standalone_proof_modified_merkle_root(tmp_path, capsys):
+    """Test adversarial tampering with transcript Merkle export root."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Tamper with export root format
+    proof_data["transcript"]["export_root"] = "invalid_root_hex"
+    tampered_file = tmp_path / "tampered_root.json"
+    tampered_file.write_text(json.dumps(proof_data), encoding="utf-8")
+
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is False
+    assert res["is_conformant"] is False
+    assert any("invalid export_root format" in r for r in res["failure_reasons"])
+
+    # CLI returns 1 (verification completed, invalid/non-conformant finding)
+    ret = cross_verify_main(["verify-proof", str(tampered_file)])
+    cap = capsys.readouterr()
+    assert ret == 1
+    assert "STANDALONE PROOF VERIFICATION: INVALID (FAILED)" in cap.err
+
+
+def test_standalone_proof_modified_contract_commitment(tmp_path, capsys):
+    """Test adversarial tampering with settlement contract ID."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Tamper with settlement contract ID
+    proof_data["settlement"]["contract_id"] = "0x" + "9" * 64
+    tampered_file = tmp_path / "tampered_cid.json"
+    tampered_file.write_text(json.dumps(proof_data), encoding="utf-8")
+
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is False
+    assert res["is_conformant"] is False
+    assert any("contract ID binding mismatch" in r for r in res["failure_reasons"])
+
+    ret = cross_verify_main(["verify-proof", str(tampered_file)])
+    assert ret == 1
+
+
+def test_standalone_proof_modified_hashlock_preimage(tmp_path, capsys):
+    """Test adversarial tampering with revealed preimage."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Tamper secret to point to wrong preimage
+    proof_data["settlement"]["secret_revealed"] = "0x" + "1" * 64
+    tampered_file = tmp_path / "tampered_preimage.json"
+    tampered_file.write_text(json.dumps(proof_data), encoding="utf-8")
+
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is False
+    assert res["is_conformant"] is False
+    assert any("secret preimage hash mismatch" in r for r in res["failure_reasons"])
+
+    ret = cross_verify_main(["verify-proof", str(tampered_file)])
+    assert ret == 1
+
+
+def test_standalone_proof_schema_invalid(tmp_path, capsys):
+    """Test rejection of schema-invalid proof documents with exit code 2."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Invalidate schema by deleting mandatory section
+    del proof_data["trust_model"]
+    invalid_file = tmp_path / "invalid_schema.json"
+    invalid_file.write_text(json.dumps(proof_data), encoding="utf-8")
+
+    res = verify_standalone_proof(proof_data)
+    assert res["schema_valid"] is False
+    assert res["valid"] is False
+    assert any("schema validation failed" in r for r in res["failure_reasons"])
+
+    # CLI returns 2 for schema error
+    ret = cross_verify_main(["verify-proof", str(invalid_file)])
+    cap = capsys.readouterr()
+    assert ret == 2
+    assert "Schema Error" in cap.err
+
+
+def test_standalone_proof_forged_rpc_provenance(tmp_path, capsys):
+    """Test detection of contradictory trust model claims (e.g. self-attested claiming conformant)."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Forged state: self-attested provenance but claiming is_conformant: true
+    proof_data["trust_model"]["settlement_evidence_provenance"] = "self_attested"
+    proof_data["trust_model"]["on_chain_execution_proven"] = True
+    proof_data["is_conformant"] = True
+    forged_file = tmp_path / "forged_trust_model.json"
+    forged_file.write_text(json.dumps(proof_data), encoding="utf-8")
+
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is False
+    assert res["is_conformant"] is False
+    assert any("trust model violation" in r for r in res["failure_reasons"])
+
+    ret = cross_verify_main(["verify-proof", str(forged_file)])
+    assert ret == 1
+
+
+def test_standalone_proof_malformed_json_and_io_errors(tmp_path, capsys):
+    """Test exit code 2 on missing files, malformed JSON, and usage errors."""
+    # 1. Missing file argument
+    ret1 = cross_verify_main(["verify-proof"])
+    cap1 = capsys.readouterr()
+    assert ret1 == 2
+    assert "the following arguments are required" in cap1.err
+
+    # 2. Missing file with --json -> valid JSON error
+    ret_j = cross_verify_main(["verify-proof", "--json"])
+    cap_j = capsys.readouterr()
+    assert ret_j == 2
+    assert json.loads(cap_j.out)["valid"] is False
+
+    # 3. Nonexistent file
+    ret_no = cross_verify_main(["verify-proof", "non_existent.json", "--json"])
+    cap_no = capsys.readouterr()
+    assert ret_no == 2
+    assert "I/O Error" in json.loads(cap_no.out)["error"]
+
+    # 4. Malformed JSON
+    bad_json = tmp_path / "corrupt.json"
+    bad_json.write_text("{not valid json", encoding="utf-8")
+    ret_bad = cross_verify_main(["verify-proof", str(bad_json), "--json"])
+    cap_bad = capsys.readouterr()
+    assert ret_bad == 2
+    assert "Runtime Error" in json.loads(cap_bad.out)["error"]
+
+
+def test_standalone_proof_trust_anchors():
+    """Test trust anchor checks in standalone proof verifier."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Matching trust anchors
+    res_ok = verify_standalone_proof(
+        proof_data,
+        trust_anchors={
+            "room": proof_data["room"],
+            "expected_root": proof_data["transcript"]["export_root"],
+            "expected_contract_id": proof_data["contract_id"],
+        },
+    )
+    assert res_ok["valid"] is True
+    assert res_ok["is_conformant"] is True
+
+    # Mismatched room trust anchor
+    res_bad_room = verify_standalone_proof(
+        proof_data,
+        trust_anchors={"room": "wrong-room"},
+    )
+    assert res_bad_room["is_conformant"] is False
+    assert any("room trust anchor mismatch" in r for r in res_bad_room["failure_reasons"])
+
+
+def test_standalone_proof_recomputed_merkle_tree_from_raw_lines():
+    """Test standalone verification recomputing Merkle export root from embedded raw lines."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Valid raw lines matching the export root
+    # Build 2 synthetic lines
+    rec1 = b'{"seq": 1, "text": "offer"}\n'
+    rec2 = b'{"seq": 2, "text": "accept"}\n'
+    from tc_ledger.ledger import export_merkle_root
+    expected_root = export_merkle_root([rec1, rec2]).hex()
+
+    proof_data["transcript"]["export_root"] = expected_root
+    proof_data["transcript"]["raw_lines"] = [rec1.decode("utf-8"), rec2.decode("utf-8")]
+
+    # Independent recomputation matches
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is True
+    assert res["cryptographic_validity"] is True
+
+    # Tampered raw lines (attacker modifies record in transcript)
+    tampered_proof = json.loads(json.dumps(proof_data))
+    tampered_proof["transcript"]["raw_lines"][0] = '{"seq": 1, "text": "forged_offer"}\n'
+    res_tampered = verify_standalone_proof(tampered_proof)
+    assert res_tampered["valid"] is False
+    assert res_tampered["cryptographic_validity"] is False
+    assert any("recomputed Merkle export root" in r for r in res_tampered["failure_reasons"])
+
+
+def test_standalone_proof_recomputed_contract_commitment_from_frames():
+    """Test standalone verification recomputing contract ID from embedded offer/accept frames."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    offer_frame = {
+        "type": "offer",
+        "id": "offer-standalone-1",
+        "role": "payer",
+        "amount": "1000000000000000",
+        "asset": "0x0000000000000000000000000000000000000000",
+        "lock": "hash",
+        "claimByMs": 1790432023000,
+        "refundAfterMs": 1790432023000,
+        "expiresMs": 1790432623000,
+        "rails": ["evm-htlc"],
+    }
+    accept_frame = {
+        "type": "accept",
+        "ref": "offer-standalone-1",
+        "statement": proof_data["agreement"]["hashlock"],
+        "nonce": "standalone-nonce-xyz",
+        "from": proof_data["agreement"]["payee_did"],
+    }
+    accept_core = {
+        "from": proof_data["agreement"]["payee_did"],
+        "ref": "offer-standalone-1",
+        "statement": proof_data["agreement"]["hashlock"],
+        "nonce": "standalone-nonce-xyz",
+    }
+    payload = {"offer": offer_frame, "accept": accept_core}
+    recomputed_cid = domain_hash("contract", canonical_json_bytes(payload))
+
+    proof_data["contract_id"] = recomputed_cid
+    proof_data["settlement"]["contract_id"] = recomputed_cid
+    proof_data["agreement"]["offer_frame"] = offer_frame
+    proof_data["agreement"]["accept_frame"] = accept_frame
+
+    # Recomputation passes with correct frames
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is True
+    assert res["cryptographic_validity"] is True
+
+    # Tampered offer frame within agreement
+    tampered_proof = json.loads(json.dumps(proof_data))
+    tampered_proof["agreement"]["offer_frame"]["amount"] = "9999999999999999"
+    res_tampered = verify_standalone_proof(tampered_proof)
+    assert res_tampered["valid"] is False
+    assert any("recalculated agreement contract ID" in r for r in res_tampered["failure_reasons"])
+
+
+def test_standalone_proof_recomputed_payment_key_address_binding():
+    """Test standalone verification recomputing EVM address from secp256k1 paymentKey."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # secp256k1 Generator point G
+    pubkey_hex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    expected_addr = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+
+    proof_data["agreement"]["payer_payment_key"] = f"secp256k1:{pubkey_hex}"
+    proof_data["settlement"]["payer_address"] = expected_addr
+
+    # Recomputation matches
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is True
+    assert res["cryptographic_validity"] is True
+
+    # Tampered settlement address (attacker substitutes different address)
+    tampered_proof = json.loads(json.dumps(proof_data))
+    tampered_proof["settlement"]["payer_address"] = "0x0000000000000000000000000000000000000001"
+    res_tampered = verify_standalone_proof(tampered_proof)
+    assert res_tampered["valid"] is False
+    assert any("payer address derived from paymentKey" in r for r in res_tampered["failure_reasons"])
+
+
+def test_standalone_proof_recomputed_inclusion_proof():
+    """Test standalone verification verifying embedded Merkle inclusion proofs."""
+    from tc_ledger.ledger import export_merkle_proof, export_merkle_root
+
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    raw_lines = [
+        b'{"seq": 1, "text": "line1"}\n',
+        b'{"seq": 2, "text": "line2"}\n',
+        b'{"seq": 3, "text": "line3"}\n',
+        b'{"seq": 4, "text": "line4"}\n',
+    ]
+    exp_root = export_merkle_root(raw_lines).hex()
+    proof_0 = export_merkle_proof(raw_lines, 0)
+    serializable_proof = [[sib.hex(), pos] for sib, pos in proof_0]
+
+    proof_data["transcript"]["export_root"] = exp_root
+    proof_data["transcript"]["merkle_proofs"] = [
+        {
+            "leaf": raw_lines[0].decode("utf-8"),
+            "proof": serializable_proof,
+            "root": exp_root,
+        }
+    ]
+
+    # Valid inclusion proof succeeds
+    res = verify_standalone_proof(proof_data)
+    assert res["valid"] is True
+
+    # Tampered inclusion proof sibling fails
+    tampered_proof = json.loads(json.dumps(proof_data))
+    tampered_proof["transcript"]["merkle_proofs"][0]["proof"][0][0] = "00" * 32
+    res_tampered = verify_standalone_proof(tampered_proof)
+    assert res_tampered["valid"] is False
+    assert any("Merkle inclusion proof #0 failed" in r for r in res_tampered["failure_reasons"])

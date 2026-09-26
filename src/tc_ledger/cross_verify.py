@@ -20,7 +20,9 @@ from typing import Any, Optional
 from tc_ledger.ledger import (
     export_leaf_hash,
     export_merkle_root,
+    merkle_root,
     verify_export_inclusion_proof,
+    verify_export_merkle_proof,
     verify_signed_record,
 )
 
@@ -131,6 +133,16 @@ def secp256k1_pubkey_to_address(pubkey_hex: str) -> str:
     point_uncompressed = x_bytes + y_bytes
     h = keccak256(point_uncompressed)
     return f"0x{h[-20:].hex().lower()}"
+
+
+def public_key_to_eth_address(key_str: str) -> str:
+    """Derives standard 20-byte EVM hex address from paymentKey string (e.g. secp256k1:0x... or hex)."""
+    if not isinstance(key_str, str):
+        raise ValueError("payment key must be a string")
+    s = key_str.strip()
+    if s.lower().startswith("secp256k1:"):
+        s = s[10:]
+    return secp256k1_pubkey_to_address(s)
 
 
 def normalize_hex(val: Any) -> Optional[str]:
@@ -1280,9 +1292,496 @@ def format_verification_report(
     return "\n".join(lines)
 
 
+_CACHED_SCHEMA: Optional[dict[str, Any]] = None
+
+
+def load_tclk_proof_schema() -> dict[str, Any]:
+    """Loads schemas/tclk-proof-v1.schema.json."""
+    global _CACHED_SCHEMA
+    if _CACHED_SCHEMA is not None:
+        return _CACHED_SCHEMA
+    schema_path = Path(__file__).resolve().parents[2] / "schemas" / "tclk-proof-v1.schema.json"
+    if schema_path.is_file():
+        _CACHED_SCHEMA = json.loads(schema_path.read_text(encoding="utf-8"))
+        return _CACHED_SCHEMA
+    raise FileNotFoundError(f"tclk-proof schema not found at {schema_path}")
+
+
+def verify_standalone_proof(
+    proof_doc: Any,
+    trust_anchors: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Pure, offline deterministic verification of an existing tclk-proof/1 proof artifact
+    without requiring original transcript files or an RPC endpoint.
+
+    Validates:
+    - JSON Schema conformance (schemas/tclk-proof-v1.schema.json)
+    - Embedded Merkle export root format and commitments
+    - Recomputed canonical contract commitment if frames are embedded
+    - Secret preimage validation: sha256(secret) == hashlock
+    - Internal cross-layer semantic equality bindings
+    - Fail-closed trust model consistency: never elevates self_attested provenance.
+    """
+    if isinstance(proof_doc, (str, Path)):
+        p = Path(proof_doc)
+        if not p.is_file():
+            raise FileNotFoundError(f"Proof file not found: {p}")
+        try:
+            proof = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Malformed proof JSON: {exc}") from exc
+    elif isinstance(proof_doc, dict):
+        proof = proof_doc
+    else:
+        raise TypeError(f"Unsupported proof_doc type: {type(proof_doc)}")
+
+    trust_anchors = trust_anchors or {}
+    expected_room = trust_anchors.get("room") or trust_anchors.get("expected_room")
+    expected_root = trust_anchors.get("export_root") or trust_anchors.get("expected_root")
+    expected_contract_id = trust_anchors.get("contract_id") or trust_anchors.get("expected_contract_id")
+    expected_chain_id = trust_anchors.get("chain_id") or trust_anchors.get("expected_chain_id")
+
+    failure_reasons: list[str] = []
+    warnings: list[str] = list(proof.get("warnings", [])) if isinstance(proof, dict) else []
+
+    # 1. Schema validation (Draft 2020-12)
+    schema_valid = True
+    try:
+        import jsonschema
+        schema = load_tclk_proof_schema()
+        jsonschema.validate(instance=proof, schema=schema)
+    except Exception as exc:
+        schema_valid = False
+        failure_reasons.append(f"schema validation failed: {exc}")
+
+    if not isinstance(proof, dict):
+        return {
+            "spec": "tclk-proof/1",
+            "version": 1,
+            "profile": "tc-ledger/1",
+            "schema": "tc-ledger/tclk-proof/v1",
+            "command": "verify-proof",
+            "valid": False,
+            "is_conformant": False,
+            "schema_valid": False,
+            "cryptographic_validity": False,
+            "failure_reasons": failure_reasons,
+            "warnings": warnings,
+            "proof": proof,
+        }
+
+    agreement = proof.get("agreement") or {}
+    transcript = proof.get("transcript") or {}
+    settlement = proof.get("settlement") or {}
+    trust_model = proof.get("trust_model") or {}
+    cross_check = proof.get("cross_check") or {}
+
+    crypto_valid = True
+
+    # 2. Contract ID verification against settlement & recomputation from embedded frames
+    cid_proof = proof.get("contract_id")
+    cid_settlement = settlement.get("contract_id")
+    cid_match = True
+    cid_proof_norm = normalize_hex(cid_proof) if cid_proof else None
+    cid_set_norm = normalize_hex(cid_settlement) if cid_settlement else None
+
+    if cid_proof and cid_settlement and cid_proof_norm != cid_set_norm:
+        crypto_valid = False
+        cid_match = False
+        failure_reasons.append(f"contract ID binding mismatch: proof '{cid_proof}' != settlement '{cid_settlement}'")
+
+    # Recalculate contract commitment if frames are embedded in agreement
+    if isinstance(agreement.get("offer_frame"), dict) and isinstance(agreement.get("accept_frame"), dict):
+        try:
+            offer = agreement["offer_frame"]
+            accept = agreement["accept_frame"]
+            accept_core = {
+                "from": accept.get("from", ""),
+                "ref": str(accept.get("ref", "")),
+                "statement": accept.get("statement", ""),
+                "nonce": accept.get("nonce", ""),
+            }
+            if "paymentKey" in accept:
+                accept_core["paymentKey"] = accept["paymentKey"]
+            payload_bytes = canonical_json_bytes({"offer": offer, "accept": accept_core})
+            recomputed_cid = domain_hash("contract", payload_bytes)
+            recomputed_cid_norm = normalize_hex(recomputed_cid)
+            if cid_proof and recomputed_cid_norm != cid_proof_norm:
+                crypto_valid = False
+                cid_match = False
+                failure_reasons.append(f"recalculated agreement contract ID '{recomputed_cid}' != proof contract ID '{cid_proof}'")
+        except Exception as exc:
+            crypto_valid = False
+            failure_reasons.append(f"failed to recalculate agreement commitment: {exc}")
+
+    # 3. Merkle export root validation and tree reconstruction
+    actual_root = transcript.get("export_root")
+    actual_root_clean = None
+    if actual_root is not None:
+        if isinstance(actual_root, str):
+            actual_root_clean = actual_root[2:] if actual_root.startswith("0x") or actual_root.startswith("0X") else actual_root
+            if len(actual_root_clean) != 64 or not all(c in "0123456789abcdefABCDEF" for c in actual_root_clean):
+                crypto_valid = False
+                failure_reasons.append(f"invalid export_root format (expected 32-byte hex): '{actual_root}'")
+        else:
+            crypto_valid = False
+            failure_reasons.append(f"invalid export_root type: {type(actual_root)}")
+
+    # Reconstruct Merkle tree if raw lines / records are embedded
+    raw_lines = transcript.get("raw_lines") or proof.get("raw_lines")
+    if raw_lines is not None:
+        if isinstance(raw_lines, list):
+            try:
+                line_bytes_list: list[bytes] = []
+                for item in raw_lines:
+                    if isinstance(item, str):
+                        line_bytes_list.append(item.encode("utf-8"))
+                    elif isinstance(item, bytes):
+                        line_bytes_list.append(item)
+                    elif isinstance(item, dict):
+                        line_bytes_list.append(canonical_json_bytes(item))
+                    else:
+                        raise TypeError(f"unsupported raw_line element: {type(item)}")
+                recomputed_root = export_merkle_root(line_bytes_list).hex()
+                if actual_root_clean:
+                    if recomputed_root.lower() != actual_root_clean.lower():
+                        crypto_valid = False
+                        failure_reasons.append(
+                            f"recomputed Merkle export root '{recomputed_root}' != transcript export root '{actual_root}'"
+                        )
+                else:
+                    actual_root_clean = recomputed_root
+            except Exception as exc:
+                crypto_valid = False
+                failure_reasons.append(f"failed to recompute Merkle export root from raw_lines: {exc}")
+        else:
+            crypto_valid = False
+            failure_reasons.append(f"invalid raw_lines in transcript (must be a list): {type(raw_lines)}")
+
+    # Verify embedded Merkle inclusion proofs if present
+    merkle_proofs = transcript.get("merkle_proofs") or transcript.get("inclusion_proofs")
+    if isinstance(merkle_proofs, list):
+        for idx, mp in enumerate(merkle_proofs):
+            if isinstance(mp, dict):
+                leaf_data = mp.get("leaf") or mp.get("raw_line")
+                path = mp.get("proof") or mp.get("path")
+                root_target = mp.get("root") or (f"0x{actual_root_clean}" if actual_root_clean else None)
+                if leaf_data and path and root_target:
+                    clean_rt = root_target[2:] if root_target.startswith("0x") or root_target.startswith("0X") else root_target
+                    try:
+                        leaf_b = leaf_data.encode("utf-8") if isinstance(leaf_data, str) else leaf_data
+                        parsed_proof = []
+                        for sib, pos in path:
+                            sib_b = bytes.fromhex(sib[2:] if sib.startswith("0x") or sib.startswith("0X") else sib) if isinstance(sib, str) else sib
+                            parsed_proof.append((sib_b, pos))
+                        if not verify_export_merkle_proof(leaf_b, parsed_proof, bytes.fromhex(clean_rt)):
+                            crypto_valid = False
+                            failure_reasons.append(f"Merkle inclusion proof #{idx} failed verification against root '{root_target}'")
+                    except Exception as exc:
+                        crypto_valid = False
+                        failure_reasons.append(f"invalid Merkle inclusion proof #{idx}: {exc}")
+
+    # Reconstruct Merkle tree if evidence_ids are embedded
+    evidence_ids = transcript.get("evidence_ids")
+    if isinstance(evidence_ids, list):
+        try:
+            recomputed_merkle_root = merkle_root(evidence_ids).hex()
+            expected_mr = transcript.get("merkle_root")
+            if expected_mr:
+                clean_mr = expected_mr[2:] if expected_mr.startswith("0x") or expected_mr.startswith("0X") else expected_mr
+                if recomputed_merkle_root.lower() != clean_mr.lower():
+                    crypto_valid = False
+                    failure_reasons.append(f"recomputed Merkle root '{recomputed_merkle_root}' != transcript merkle_root '{expected_mr}'")
+        except Exception as exc:
+            crypto_valid = False
+            failure_reasons.append(f"failed to recompute Merkle root from evidence_ids: {exc}")
+
+    # 4. Secret preimage & hashlock validation
+    secret = settlement.get("secret_revealed")
+    hashlock_agr = agreement.get("hashlock")
+    hashlock_set = settlement.get("hashlock")
+    hashlock_match = True
+    hl_agr_norm = normalize_hex(hashlock_agr) if hashlock_agr else None
+    hl_set_norm = normalize_hex(hashlock_set) if hashlock_set else None
+
+    if hashlock_agr and hashlock_set and hl_agr_norm != hl_set_norm:
+        crypto_valid = False
+        hashlock_match = False
+        failure_reasons.append(f"hashlock mismatch: agreement '{hashlock_agr}' != settlement '{hashlock_set}'")
+
+    secret_match = True
+    secret_checked = False
+    if secret:
+        secret_checked = True
+        raw_secret_hex = secret[2:] if secret.startswith("0x") or secret.startswith("0X") else secret
+        try:
+            secret_bytes = bytes.fromhex(raw_secret_hex)
+            computed_hashlock = "0x" + hashlib.sha256(secret_bytes).hexdigest()
+            computed_hl_norm = normalize_hex(computed_hashlock)
+            target_norm = hl_agr_norm or hl_set_norm
+            if target_norm and computed_hl_norm != target_norm:
+                crypto_valid = False
+                secret_match = False
+                failure_reasons.append(f"secret preimage hash mismatch: sha256({secret}) = '{computed_hashlock}' != expected '{hashlock_agr or hashlock_set}'")
+        except ValueError as exc:
+            crypto_valid = False
+            secret_match = False
+            failure_reasons.append(f"malformed secret hex '{secret}': {exc}")
+
+    # 5. Amount and Asset bindings
+    amt_agr = agreement.get("amount")
+    amt_set = settlement.get("amount")
+    amount_match = True
+    norm_amt_agr = normalize_amount_str(amt_agr)
+    norm_amt_set = normalize_amount_str(amt_set)
+    if norm_amt_agr is not None and norm_amt_set is not None and norm_amt_agr != norm_amt_set:
+        crypto_valid = False
+        amount_match = False
+        failure_reasons.append(f"amount binding mismatch: agreement '{amt_agr}' != settlement '{amt_set}'")
+
+    asset_agr = agreement.get("asset")
+    asset_set = settlement.get("asset")
+    asset_match = True
+    norm_asset_agr = normalize_address(asset_agr) or (asset_agr.lower() if isinstance(asset_agr, str) else None)
+    norm_asset_set = normalize_address(asset_set) or (asset_set.lower() if isinstance(asset_set, str) else None)
+    if norm_asset_agr and norm_asset_set and norm_asset_agr != norm_asset_set:
+        crypto_valid = False
+        asset_match = False
+        failure_reasons.append(f"asset binding mismatch: agreement '{asset_agr}' != settlement '{asset_set}'")
+
+    # 6. Trust anchors validation
+    if expected_room and proof.get("room") != expected_room:
+        failure_reasons.append(f"room trust anchor mismatch: expected '{expected_room}', got '{proof.get('room')}'")
+
+    if expected_root:
+        clean_exp_root = expected_root[2:] if expected_root.startswith("0x") or expected_root.startswith("0X") else expected_root
+        if actual_root_clean and actual_root_clean.lower() != clean_exp_root.lower():
+            failure_reasons.append(f"export root trust anchor mismatch: expected '{expected_root}', got '{actual_root}'")
+
+    if expected_contract_id and cid_proof:
+        exp_cid_norm = normalize_hex(expected_contract_id)
+        if cid_proof_norm != exp_cid_norm:
+            failure_reasons.append(f"contract ID trust anchor mismatch: expected '{expected_contract_id}', got '{cid_proof}'")
+
+    # 7. Trust Model & Provenance Separation Invariants
+    provenance = trust_model.get("settlement_evidence_provenance")
+    claimed_on_chain_proven = trust_model.get("on_chain_execution_proven", False)
+    claimed_conformant = proof.get("is_conformant", False)
+    trust_model_ok = True
+
+    if provenance == "self_attested":
+        if claimed_on_chain_proven:
+            crypto_valid = False
+            trust_model_ok = False
+            failure_reasons.append("trust model violation: self_attested settlement evidence cannot claim on_chain_execution_proven: true")
+        if claimed_conformant:
+            crypto_valid = False
+            trust_model_ok = False
+            failure_reasons.append("trust model violation: self_attested settlement evidence cannot claim is_conformant: true")
+        if not any("self-attested" in r for r in failure_reasons) and not claimed_conformant:
+            failure_reasons.append("settlement evidence is self-attested and lacks independent on-chain provenance")
+    elif provenance in ("rpc_receipt_verified", "cryptographic_receipt_proof"):
+        if not crypto_valid or not schema_valid:
+            trust_model_ok = False
+    else:
+        trust_model_ok = False
+        crypto_valid = False
+        failure_reasons.append(f"unsupported settlement evidence provenance: '{provenance}'")
+
+    # 8. Payment key address derivation checks
+    payer_pk = agreement.get("payer_payment_key")
+    if payer_pk and settlement.get("payer_address"):
+        try:
+            expected_payer_addr = public_key_to_eth_address(payer_pk)
+            norm_exp_payer = normalize_address(expected_payer_addr)
+            norm_set_payer = normalize_address(settlement["payer_address"])
+            if norm_exp_payer != norm_set_payer:
+                crypto_valid = False
+                failure_reasons.append(f"payer address derived from paymentKey '{expected_payer_addr}' != settlement '{settlement['payer_address']}'")
+        except Exception as exc:
+            crypto_valid = False
+            failure_reasons.append(f"invalid payer paymentKey: {exc}")
+
+    payee_pk = agreement.get("payee_payment_key")
+    if payee_pk and settlement.get("payee_address"):
+        try:
+            expected_payee_addr = public_key_to_eth_address(payee_pk)
+            norm_exp_payee = normalize_address(expected_payee_addr)
+            norm_set_payee = normalize_address(settlement["payee_address"])
+            if norm_exp_payee != norm_set_payee:
+                crypto_valid = False
+                failure_reasons.append(f"payee address derived from paymentKey '{expected_payee_addr}' != settlement '{settlement['payee_address']}'")
+        except Exception as exc:
+            crypto_valid = False
+            failure_reasons.append(f"invalid payee paymentKey: {exc}")
+
+    # 9. Temporal ordering & lifecycle checks
+    lock_ts = settlement.get("lock_timestamp")
+    claim_ts = settlement.get("claim_timestamp")
+    refund_ts = settlement.get("refund_timestamp")
+    temporal_match = True
+    if lock_ts is not None and claim_ts is not None and int(lock_ts) > int(claim_ts):
+        crypto_valid = False
+        temporal_match = False
+        failure_reasons.append(f"temporal ordering violation: lock_timestamp ({lock_ts}) > claim_timestamp ({claim_ts})")
+    if claim_ts is not None and refund_ts is not None and int(claim_ts) > int(refund_ts):
+        crypto_valid = False
+        temporal_match = False
+        failure_reasons.append(f"temporal ordering violation: claim_timestamp ({claim_ts}) > refund_timestamp ({refund_ts})")
+
+    # Retain recorded failure reasons from proof
+    for recorded_f in proof.get("failure_reasons", []):
+        if recorded_f not in failure_reasons:
+            failure_reasons.append(recorded_f)
+
+    is_valid = schema_valid and crypto_valid and trust_model_ok and (len([r for r in failure_reasons if not r.startswith("settlement evidence is self-attested")]) == 0)
+    final_conformant = is_valid and (provenance in ("rpc_receipt_verified", "cryptographic_receipt_proof")) and claimed_conformant and (len(failure_reasons) == 0)
+
+    return {
+        "spec": "tclk-proof/1",
+        "version": 1,
+        "profile": "tc-ledger/1",
+        "schema": "tc-ledger/tclk-proof/v1",
+        "command": "verify-proof",
+        "valid": is_valid,
+        "is_conformant": final_conformant,
+        "schema_valid": schema_valid,
+        "cryptographic_validity": crypto_valid,
+        "contract_id": proof.get("contract_id"),
+        "room": proof.get("room"),
+        "provenance": provenance,
+        "cross_check": {
+            "schema_validation": "verified" if schema_valid else "failed",
+            "cryptographic_validity": "verified" if crypto_valid else "failed",
+            "contract_id_binding": "verified" if cid_match else "failed",
+            "hashlock_binding": "verified" if hashlock_match else "failed",
+            "secret_verification": "verified" if secret_match else ("failed" if secret_checked else "not_applicable"),
+            "amount_binding": "verified" if amount_match else "failed",
+            "asset_binding": "verified" if asset_match else "failed",
+            "temporal_ordering": "verified" if temporal_match else "failed",
+            "trust_model_consistency": "verified" if trust_model_ok else "failed",
+        },
+        "trust_model": {
+            "settlement_evidence_provenance": provenance,
+            "on_chain_execution_proven": claimed_on_chain_proven and trust_model_ok,
+            "transcript_authenticity": trust_model.get("transcript_authenticity", False),
+            "terms_conformance": trust_model.get("terms_conformance", False),
+        },
+        "failure_reasons": failure_reasons,
+        "warnings": warnings,
+        "proof": proof,
+    }
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """CLI entrypoint for tclk-proof."""
     raw_args = list(argv) if argv is not None else list(sys.argv[1:])
+
+    # Handle 'tclk-proof verify-proof <proof.json>'
+    if raw_args and raw_args[0] in ("verify-proof", "verify_proof"):
+        raw_args = raw_args[1:]
+        vp_parser = argparse.ArgumentParser(
+            prog="tclk-proof verify-proof",
+            description="Verify an existing tclk-proof/1 proof artifact offline without RPC or transcript dependencies."
+        )
+        vp_parser.add_argument("proof", nargs="?", default=None, help="Path to proof JSON artifact")
+        vp_parser.add_argument("--proof", dest="proof_flag", help="Path to proof JSON artifact")
+        vp_parser.add_argument("--room", help="Expected room identifier trust anchor")
+        vp_parser.add_argument("--expected-root", help="Expected room export Merkle root hex")
+        vp_parser.add_argument("--expected-contract-id", help="Expected contract ID trust anchor")
+        vp_parser.add_argument("--chain-id", type=int, help="Expected EVM network chain ID")
+        vp_parser.add_argument("--output", help="Optional output path to write verification result JSON")
+        vp_parser.add_argument("--json", action="store_true", help="Output machine-readable JSON result")
+        vp_parser.add_argument("--report", action="store_true", help="Output human-readable verification report")
+
+        try:
+            vp_args = vp_parser.parse_args(raw_args)
+        except SystemExit as e:
+            return 2 if e.code != 0 else 0
+
+        is_json = getattr(vp_args, "json", False)
+        is_report = getattr(vp_args, "report", False)
+        proof_source = vp_args.proof_flag or vp_args.proof
+
+        if not proof_source:
+            if is_json:
+                print(json.dumps({"valid": False, "error": "Missing required argument: proof (positional or --proof)"}, indent=2))
+            else:
+                print("error: the following arguments are required: proof (positional or --proof)", file=sys.stderr)
+            return 2
+
+        trust_anchors = {
+            "room": vp_args.room,
+            "expected_root": vp_args.expected_root,
+            "expected_contract_id": vp_args.expected_contract_id,
+            "chain_id": getattr(vp_args, "chain_id", None),
+        }
+
+        try:
+            result = verify_standalone_proof(proof_source, trust_anchors=trust_anchors)
+        except FileNotFoundError as exc:
+            if is_json:
+                print(json.dumps({"valid": False, "error": f"I/O Error: {exc}"}, indent=2))
+            else:
+                print(f"I/O Error: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            if is_json:
+                print(json.dumps({"valid": False, "error": f"Runtime Error: {exc}"}, indent=2))
+            else:
+                print(f"Runtime Error: {exc}", file=sys.stderr)
+            return 2
+
+        # If schema validation failed, fail with exit code 2
+        if not result.get("schema_valid", True):
+            if is_json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(f"Schema Error: {result.get('failure_reasons', ['Invalid proof schema'])[0]}", file=sys.stderr)
+            return 2
+
+        if vp_args.output:
+            try:
+                out_p = Path(vp_args.output)
+                out_p.parent.mkdir(parents=True, exist_ok=True)
+                out_p.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            except Exception as exc:
+                if is_json:
+                    print(json.dumps({"valid": False, "error": f"I/O Error writing output: {exc}"}, indent=2))
+                else:
+                    print(f"I/O Error writing output: {exc}", file=sys.stderr)
+                return 2
+
+        is_conformant = result.get("is_conformant", False)
+        is_valid = result.get("valid", False)
+
+        if is_json:
+            print(json.dumps(result, indent=2))
+        elif is_report:
+            report_proof = dict(result.get("proof", {}))
+            report_proof["is_conformant"] = is_conformant
+            report_proof["failure_reasons"] = result.get("failure_reasons", [])
+            print(format_verification_report(report_proof, trust_anchors=trust_anchors))
+        else:
+            if is_conformant:
+                print("STANDALONE PROOF VERIFICATION: CONFORMANT (SUCCESS)")
+                print(f"Contract ID: {result.get('contract_id')}")
+                print(f"Room:        {result.get('room')}")
+                print(f"Provenance:  {result.get('provenance')}")
+            elif is_valid:
+                print("STANDALONE PROOF VERIFICATION: VALID (NON-CONFORMANT)")
+                print(f"Contract ID: {result.get('contract_id')}")
+                print(f"Room:        {result.get('room')}")
+                print(f"Provenance:  {result.get('provenance')}")
+                for reason in result.get("failure_reasons", []):
+                    print(f"  - Note: {reason}")
+            else:
+                print("STANDALONE PROOF VERIFICATION: INVALID (FAILED)", file=sys.stderr)
+                for reason in result.get("failure_reasons", []):
+                    print(f"  - Failure: {reason}", file=sys.stderr)
+
+        return 0 if is_conformant else 1
 
     # Support 'tclk-proof verify export.jsonl settlement.json' and 'tclk-proof export.jsonl settlement.json'
     if raw_args and raw_args[0] == "verify":

@@ -44,6 +44,12 @@ from .ledger import (
     # CLI entry point
     main,
 )
+from .cross_verify import (
+    verify_cross_layer,
+    verify_standalone_proof,
+    format_verification_report,
+    load_tclk_proof_schema,
+)
 
 __version__ = "0.3.0"
 
@@ -82,5 +88,9 @@ __all__ = [
     "build_consistency_proof_artifact",
     "write_consistency_proof_artifact",
     "verify_consistency_proof_artifact",
+    "verify_cross_layer",
+    "verify_standalone_proof",
+    "format_verification_report",
+    "load_tclk_proof_schema",
     "main",
 ]
