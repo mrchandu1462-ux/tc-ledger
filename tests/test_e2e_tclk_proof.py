@@ -138,7 +138,7 @@ def anvil_environment() -> Generator[dict[str, Any], None, None]:
 
         bytecode = json.loads(htlc_json_path.read_text(encoding="utf-8"))["bytecode"]["object"]
         deploy_tx = _rpc(rpc_url, "eth_sendTransaction", [{"from": payer_eth, "data": bytecode}])
-        
+
         deploy_rcpt = _wait_for_receipt(rpc_url, deploy_tx)
         htlc_address = deploy_rcpt["contractAddress"]
 
@@ -704,3 +704,17 @@ def test_e2e_tclk_proof_cli_verify_clean_syntax(anvil_environment: dict[str, Any
     proof_data = json.loads(out_json.read_text(encoding="utf-8"))
     assert proof_data["is_conformant"] is True
     assert proof_data["contract_id"] == contract_id
+
+    # Test CLI --report execution against live Anvil RPC
+    cli_report_args = [
+        "verify",
+        "--transcript", str(export_file),
+        "--rpc-url", rpc_url,
+        "--lock-tx", lock_tx,
+        "--claim-tx", claim_tx,
+        "--htlc-address", htlc_addr,
+        "--chain-id", str(env["chain_id"]),
+        "--report",
+    ]
+    ret_rep = cross_verify_main(cli_report_args)
+    assert ret_rep == 0

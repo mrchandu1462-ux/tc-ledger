@@ -1600,6 +1600,7 @@ def main() -> int:
     cross_parser.add_argument("--expected-contract-id", help="expected contract ID")
     cross_parser.add_argument("--output", help="optional output file path for proof artifact")
     cross_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
+    cross_parser.add_argument("--report", action="store_true", help="output human-readable verification report")
 
     args = parser.parse_args()
     is_json = getattr(args, "json", False)
@@ -2062,6 +2063,9 @@ def main() -> int:
         is_conformant = proof.get("is_conformant", False)
         if is_json:
             print(json.dumps(proof, indent=2))
+        elif getattr(args, "report", False):
+            from tc_ledger.cross_verify import format_verification_report
+            print(format_verification_report(proof, trust_anchors=trust_anchors))
         else:
             if is_conformant:
                 print("CROSS-VERIFICATION: CONFORMANT (SUCCESS)")

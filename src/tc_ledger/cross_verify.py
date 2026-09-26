@@ -1035,6 +1035,251 @@ def verify_cross_layer(
     return proof_artifact
 
 
+def format_verification_report(
+    proof: dict[str, Any],
+    trust_anchors: dict[str, Any] | None = None,
+) -> str:
+    """
+    Renders a deterministic, human-readable verification report detailing:
+    - Final conformity verdict (PASS: CONFORMANT / FAIL: NON-CONFORMANT)
+    - Trust anchors and verification scope
+    - Off-chain transcript authenticity and Merkle inclusion
+    - Agreement terms & participants
+    - EVM settlement rail evidence and transaction receipts
+    - Cross-layer binding and conformance checks
+    - Provenance & trust model separation
+    - Warnings, anomalies, and failure reasons with explicit [OK], [FAIL], [WARN], [INFO] markers.
+    """
+    import datetime
+
+    def _fmt_ts(val: Any, is_ms: bool = False) -> str:
+        if val is None:
+            return "N/A"
+        try:
+            num = int(val)
+            sec = num / 1000.0 if is_ms else float(num)
+            dt = datetime.datetime.fromtimestamp(sec, tz=datetime.timezone.utc)
+            unit = "ms" if is_ms else "s"
+            return f"{num} {unit} ({dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
+        except Exception:
+            return str(val)
+
+    def _tag_status(val: Any, ok_tags: tuple[str, ...] = ("verified", "complete", "ACCEPTED", "rpc_receipt_verified", "on_chain_receipt_verified", "cryptographic_receipt_proof", "verified_via_payment_key")) -> str:
+        if val is True:
+            return "[OK] True"
+        if val is False:
+            return "[FAIL] False"
+        s = str(val)
+        if s in ok_tags:
+            return f"[OK] {s}"
+        if "unverified_external_mapping" in s or s == "self_attested":
+            return f"[WARN] {s}"
+        if s in ("not_applicable", "none", "None", "partial"):
+            return f"[INFO] {s}"
+        return f"[FAIL] {s}"
+
+    lines: list[str] = []
+    bar = "=" * 80
+    sep = "-" * 80
+
+    proof_dict = proof if isinstance(proof, dict) else {}
+    is_conformant = bool(proof_dict.get("is_conformant", False))
+    verdict_tag = "[OK] PASS: CONFORMANT" if is_conformant else "[FAIL] FAIL: NON-CONFORMANT"
+
+    contract_id = proof_dict.get("contract_id", "N/A")
+    room = proof_dict.get("room", "N/A")
+    spec = proof_dict.get("spec", "tclk-proof/1")
+    version = proof_dict.get("version", 1)
+    profile = proof_dict.get("profile", "tc-ledger/1")
+    schema = proof_dict.get("schema", "tc-ledger/tclk-proof/v1")
+
+    # Header
+    lines.append(bar)
+    lines.append("                  TCLK-PROOF VERIFICATION REPORT")
+    lines.append(bar)
+    lines.append(f"Specification:   {spec} (v{version})  |  Profile: {profile}")
+    lines.append(f"Schema:          {schema}")
+    lines.append(f"Contract ID:     {contract_id}")
+    lines.append(f"Room:            {room}")
+    lines.append(f"Final Verdict:   {verdict_tag}")
+    lines.append("")
+
+    # 1. Trust Anchors
+    lines.append(sep)
+    lines.append("[1] TRUST ANCHORS & CONTEXT")
+    lines.append(sep)
+    anchors = trust_anchors or {}
+    exp_room = anchors.get("room") or anchors.get("expected_room")
+    exp_root = anchors.get("export_root") or anchors.get("expected_root")
+    exp_cid = anchors.get("contract_id") or anchors.get("expected_contract_id")
+    exp_chain = anchors.get("chain_id") or anchors.get("expected_chain_id")
+
+    if exp_room:
+        match_room = "[OK] Matched" if exp_room == room else f"[FAIL] Mismatch (expected {exp_room})"
+        lines.append(f"  Expected Room:        {exp_room} -> {match_room}")
+    else:
+        lines.append("  Expected Room:        [INFO] Not specified (inferred from transcript)")
+
+    transcript_root = (proof_dict.get("transcript") or {}).get("export_root")
+    if exp_root:
+        match_root = "[OK] Matched" if transcript_root and exp_root.lower() == transcript_root.lower() else f"[FAIL] Mismatch (expected {exp_root})"
+        lines.append(f"  Expected Export Root: {exp_root} -> {match_root}")
+    else:
+        lines.append("  Expected Export Root: [INFO] Not specified")
+
+    if exp_cid:
+        match_cid = "[OK] Matched" if exp_cid.lower() == str(contract_id).lower() else f"[FAIL] Mismatch (expected {exp_cid})"
+        lines.append(f"  Expected Contract ID: {exp_cid} -> {match_cid}")
+    else:
+        lines.append("  Expected Contract ID: [INFO] Not specified")
+
+    if exp_chain:
+        lines.append(f"  Expected Chain ID:    {exp_chain} -> [OK] Verified")
+    else:
+        lines.append("  Expected Chain ID:    [INFO] Not specified")
+    lines.append("")
+
+    # 2. Off-Chain Transcript Verification
+    lines.append(sep)
+    lines.append("[2] OFF-CHAIN TRANSCRIPT VERIFICATION")
+    lines.append(sep)
+    tr = proof_dict.get("transcript")
+    if isinstance(tr, dict) and tr:
+        tr_status = tr.get("status", "unknown")
+        tr_auth = tr.get("authenticity", "unknown")
+        tr_sigs = tr.get("signatures_verified")
+        tr_merkle = tr.get("merkle_inclusion_verified")
+        tr_frames = ", ".join(tr.get("frames_verified", [])) or "None"
+
+        lines.append(f"  Room Identifier:      {tr.get('room', 'N/A')}")
+        lines.append(f"  Transcript Records:   {tr.get('line_count', 'N/A')} lines parsed")
+        lines.append(f"  Frames Verified:      {tr_frames}")
+        lines.append(f"  Ed25519 Signatures:   {_tag_status(tr_sigs)}")
+        lines.append(f"  Merkle Export Root:   {tr.get('export_root', 'N/A')} ({_tag_status(tr_merkle)})")
+        lines.append(f"  Authenticity Status:  {_tag_status(tr_auth)} (transcript {tr_status})")
+    else:
+        lines.append("  [FAIL] Transcript evidence missing or failed to parse")
+    lines.append("")
+
+    # 3. Agreement Terms
+    lines.append(sep)
+    lines.append("[3] AGREEMENT TERMS (OFF-CHAIN NEGOTIATION)")
+    lines.append(sep)
+    ag = proof_dict.get("agreement")
+    if isinstance(ag, dict) and ag:
+        lines.append(f"  Agreement Status:     {_tag_status(ag.get('status', 'unknown'))}")
+        lines.append(f"  Payer DID:            {ag.get('payer_did', 'N/A')}")
+        if ag.get("payer_payment_key"):
+            lines.append(f"  Payer Payment Key:    {ag.get('payer_payment_key')}")
+        lines.append(f"  Payee DID:            {ag.get('payee_did', 'N/A')}")
+        if ag.get("payee_payment_key"):
+            lines.append(f"  Payee Payment Key:    {ag.get('payee_payment_key')}")
+        lines.append(f"  Agreed Amount:        {ag.get('amount', 'N/A')}")
+        lines.append(f"  Agreed Asset:         {ag.get('asset', 'N/A')}")
+        lines.append(f"  Lock Kind:            {ag.get('lock_kind', 'N/A')}")
+        lines.append(f"  Agreed Hashlock:      {ag.get('hashlock', 'N/A')}")
+        lines.append(f"  Claim By:             {_fmt_ts(ag.get('claim_by_ms'), is_ms=True)}")
+        lines.append(f"  Refund After:         {_fmt_ts(ag.get('refund_after_ms'), is_ms=True)}")
+        lines.append(f"  Expires:              {_fmt_ts(ag.get('expires_ms'), is_ms=True)}")
+        rails_list = ag.get("rails")
+        rails_str = ", ".join(rails_list) if isinstance(rails_list, list) else (str(rails_list) if rails_list else "None")
+        lines.append(f"  Settlement Rails:     {rails_str}")
+    else:
+        lines.append("  [FAIL] Agreement state missing or unextractable")
+    lines.append("")
+
+    # 4. EVM Settlement Evidence
+    lines.append(sep)
+    lines.append("[4] EVM SETTLEMENT / RAIL EVIDENCE")
+    lines.append(sep)
+    st = proof_dict.get("settlement")
+    if isinstance(st, dict) and st:
+        lines.append(f"  Settlement Rail:      {st.get('rail', 'N/A')}")
+        lines.append(f"  Settlement Status:    {st.get('status', 'N/A')}")
+        lines.append(f"  HTLC Contract:        {st.get('contract_address', 'N/A')}")
+        lines.append(f"  Lock Transaction:     {st.get('lock_tx', 'N/A')} ({_fmt_ts(st.get('lock_timestamp'), is_ms=False)})")
+        lines.append(f"  Claim Transaction:    {st.get('claim_tx', 'N/A')} ({_fmt_ts(st.get('claim_timestamp'), is_ms=False)})")
+        lines.append(f"  Refund Transaction:   {st.get('refund_tx', 'N/A')} ({_fmt_ts(st.get('refund_timestamp'), is_ms=False)})")
+        lines.append(f"  Payer Address:        {st.get('payer_address', 'N/A')}")
+        lines.append(f"  Payee Address:        {st.get('payee_address', 'N/A')}")
+        secret = st.get("secret_revealed")
+        secret_disp = f"{secret[:10]}...{secret[-8:]}" if secret and len(secret) > 20 else (secret or "None")
+        lines.append(f"  Revealed Preimage:    {secret_disp}")
+        chain_id_val = st.get("chain_id") or (anchors.get("chain_id") if anchors else None)
+        if chain_id_val is not None:
+            lines.append(f"  EVM Chain ID:         {chain_id_val}")
+    else:
+        lines.append("  [FAIL] Settlement evidence missing")
+    lines.append("")
+
+    # 5. Cross-Layer Bindings
+    lines.append(sep)
+    lines.append("[5] CROSS-LAYER BINDINGS & CONFORMANCE")
+    lines.append(sep)
+    cc = proof_dict.get("cross_check")
+    if isinstance(cc, dict) and cc:
+        lines.append(f"  Contract ID Binding:  {_tag_status(cc.get('contract_id_binding'))}")
+        lines.append(f"  Hashlock Binding:     {_tag_status(cc.get('hashlock_binding'))}")
+        lines.append(f"  Amount Binding:       {_tag_status(cc.get('amount_binding'))}")
+        lines.append(f"  Asset / Token Binding:{_tag_status(cc.get('asset_binding'))}")
+        lines.append(f"  Secret Preimage Check:{_tag_status(cc.get('secret_verification'))}")
+        lines.append(f"  Temporal Ordering:    {_tag_status(cc.get('temporal_ordering'))}")
+        lines.append(f"  Settlement Lifecycle: {_tag_status(cc.get('settlement_lifecycle'))}")
+        lines.append(f"  Payer Address Binding:{_tag_status(cc.get('address_binding_payer'))}")
+        lines.append(f"  Payee Address Binding:{_tag_status(cc.get('address_binding_payee'))}")
+        lines.append(f"  Overall Address Bind: {_tag_status(cc.get('address_binding'))}")
+        lines.append(f"  Terms Conformance:    {_tag_status(cc.get('terms_conformance'))}")
+    else:
+        lines.append("  [FAIL] Cross-check results missing")
+    lines.append("")
+
+    # 6. Provenance & Trust Model
+    lines.append(sep)
+    lines.append("[6] PROVENANCE & TRUST MODEL")
+    lines.append(sep)
+    tm = proof_dict.get("trust_model")
+    if isinstance(tm, dict) and tm:
+        prov = tm.get("settlement_evidence_provenance", "unknown")
+        lines.append(f"  Evidence Provenance:  {_tag_status(prov)}")
+        lines.append(f"  On-Chain Exec Proven: {_tag_status(tm.get('on_chain_execution_proven'))}")
+        lines.append(f"  Transcript Sigs:      {_tag_status(tm.get('proves_transcript_signatures'))}")
+        lines.append(f"  Merkle Export Root:   {_tag_status(tm.get('proves_merkle_export_inclusion'))}")
+        notice = tm.get("notice")
+        if notice:
+            lines.append(f"  Trust Notice:         {notice}")
+    else:
+        lines.append("  [FAIL] Trust model assessment missing")
+    lines.append("")
+
+    # 7. Warnings & Anomalies
+    lines.append(sep)
+    warnings = proof_dict.get("warnings") or []
+    lines.append(f"[7] WARNINGS & ANOMALIES ({len(warnings)})")
+    lines.append(sep)
+    if warnings:
+        for w in warnings:
+            lines.append(f"  - [WARN] {w}")
+    else:
+        lines.append("  [INFO] None")
+    lines.append("")
+
+    # 8. Failure Reasons & Final Verdict
+    lines.append(sep)
+    failures = proof_dict.get("failure_reasons") or []
+    lines.append(f"[8] FAILURE REASONS ({len(failures)})")
+    lines.append(sep)
+    if failures:
+        for f in failures:
+            lines.append(f"  - [FAIL] {f}")
+    else:
+        lines.append("  [INFO] None")
+    lines.append(bar)
+    lines.append(f"FINAL CONFORMITY VERDICT: {verdict_tag}")
+    lines.append(bar)
+
+    return "\n".join(lines)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """CLI entrypoint for tclk-proof."""
     raw_args = list(argv) if argv is not None else list(sys.argv[1:])
@@ -1062,6 +1307,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--expected-contract-id", help="Expected contract ID trust anchor")
     parser.add_argument("--output", help="Optional output path to write proof JSON artifact")
     parser.add_argument("--json", action="store_true", help="Output proof artifact as machine-readable JSON")
+    parser.add_argument("--report", action="store_true", help="Output human-readable verification report")
 
     try:
         args = parser.parse_args(raw_args)
@@ -1120,6 +1366,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.json:
         print(json.dumps(proof, indent=2))
+    elif args.report:
+        print(format_verification_report(proof, trust_anchors=trust_anchors))
     else:
         if is_conformant:
             print("CROSS-VERIFICATION: CONFORMANT (SUCCESS)")

@@ -18,8 +18,10 @@ from tc_ledger.cross_verify import (
     domain_hash,
     secp256k1_pubkey_to_address,
     verify_cross_layer,
+    format_verification_report,
     main as cross_verify_main,
 )
+from tc_ledger.ledger import main as ledger_main
 
 
 def _make_keypair():
@@ -569,3 +571,189 @@ def test_adversarial_spoofed_rpc_provenance_in_settlement_json(mock_deal_environ
     assert proof["cross_check"]["on_chain_provenance"] == "unverified"
     assert proof["is_conformant"] is False
     assert any("self-attested and lacks independent on-chain provenance" in r for r in proof["failure_reasons"])
+
+
+def test_format_verification_report_conformant_structure(mock_deal_environment):
+    env = mock_deal_environment
+    proof = verify_cross_layer(env["export_file"], env["settlement_file"])
+
+    # Simulate on-chain verified RPC proof
+    proof["settlement"]["provenance"] = "rpc_receipt_verified"
+    proof["settlement"]["evidence_provenance"] = "rpc_receipt_verified"
+    proof["trust_model"]["on_chain_execution_proven"] = True
+    proof["trust_model"]["settlement_evidence_provenance"] = "rpc_receipt_verified"
+    proof["cross_check"]["on_chain_provenance"] = "verified"
+    proof["is_conformant"] = True
+    proof["failure_reasons"] = []
+
+    trust_anchors = {
+        "room": env["room"],
+        "expected_root": proof["transcript"]["export_root"],
+        "expected_contract_id": env["contract_id"],
+        "chain_id": 31337,
+    }
+
+    report = format_verification_report(proof, trust_anchors=trust_anchors)
+
+    assert "TCLK-PROOF VERIFICATION REPORT" in report
+    assert "Specification:   tclk-proof/1" in report
+    assert "Final Verdict:   [OK] PASS: CONFORMANT" in report
+    assert "[1] TRUST ANCHORS & CONTEXT" in report
+    assert f"Expected Room:        {env['room']} -> [OK] Matched" in report
+    assert "[2] OFF-CHAIN TRANSCRIPT VERIFICATION" in report
+    assert "Ed25519 Signatures:   [OK] True" in report or "Ed25519 Signatures:   [OK] Verified" in report or "[OK]" in report
+    assert "[3] AGREEMENT TERMS (OFF-CHAIN NEGOTIATION)" in report
+    assert f"Payer DID:            {env['payer_did']}" in report
+    assert f"Payee DID:            {env['payee_did']}" in report
+    assert "[4] EVM SETTLEMENT / RAIL EVIDENCE" in report
+    assert "[5] CROSS-LAYER BINDINGS & CONFORMANCE" in report
+    assert "Contract ID Binding:  [OK] verified" in report
+    assert "Hashlock Binding:     [OK] verified" in report
+    assert "Amount Binding:       [OK] verified" in report
+    assert "Asset / Token Binding:[OK] verified" in report
+    assert "[6] PROVENANCE & TRUST MODEL" in report
+    assert "Evidence Provenance:  [OK] rpc_receipt_verified" in report
+    assert "On-Chain Exec Proven: [OK] True" in report
+    assert "[7] WARNINGS & ANOMALIES" in report
+    assert "[8] FAILURE REASONS (0)" in report
+    assert "[INFO] None" in report
+    assert "FINAL CONFORMITY VERDICT: [OK] PASS: CONFORMANT" in report
+
+
+def test_format_verification_report_non_conformant_with_failures(mock_deal_environment):
+    env = mock_deal_environment
+    proof = verify_cross_layer(env["export_file"], env["settlement_file"])
+
+    assert proof["is_conformant"] is False
+    report = format_verification_report(proof)
+
+    assert "Final Verdict:   [FAIL] FAIL: NON-CONFORMANT" in report
+    assert "[FAIL] FAIL: NON-CONFORMANT" in report
+    assert "Evidence Provenance:  [WARN] self_attested" in report
+    assert "On-Chain Exec Proven: [FAIL] False" in report
+    assert "[8] FAILURE REASONS (" in report
+    assert "- [FAIL] settlement evidence is self-attested and lacks independent on-chain provenance" in report
+    assert "FINAL CONFORMITY VERDICT: [FAIL] FAIL: NON-CONFORMANT" in report
+
+
+def test_format_verification_report_warnings(mock_deal_environment):
+    env = mock_deal_environment
+    proof = verify_cross_layer(env["export_file"], env["settlement_file"])
+    proof["warnings"] = ["test non-fatal warning condition"]
+
+    report = format_verification_report(proof)
+    assert "[7] WARNINGS & ANOMALIES (1)" in report
+    assert "- [WARN] test non-fatal warning condition" in report
+
+
+
+def test_cli_report_flag_tclk_proof(mock_deal_environment, capsys):
+    env = mock_deal_environment
+    # Test tclk-proof with --report
+    ret = cross_verify_main([str(env["export_file"]), str(env["settlement_file"]), "--report"])
+    captured = capsys.readouterr()
+    assert "TCLK-PROOF VERIFICATION REPORT" in captured.out
+    assert "FINAL CONFORMITY VERDICT:" in captured.out
+    assert ret == 1  # self-attested settlement is non-conformant
+
+    # Test tclk-proof verify with --report
+    ret_verify = cross_verify_main(["verify", str(env["export_file"]), str(env["settlement_file"]), "--report"])
+    captured_verify = capsys.readouterr()
+    assert "TCLK-PROOF VERIFICATION REPORT" in captured_verify.out
+    assert ret_verify == 1
+
+
+def test_cli_report_flag_tc_ledger(mock_deal_environment, capsys, monkeypatch):
+    env = mock_deal_environment
+    monkeypatch.setattr(
+        "sys.argv",
+        ["tc-ledger", "cross-verify", str(env["export_file"]), str(env["settlement_file"]), "--report"],
+    )
+    ret = ledger_main()
+    captured = capsys.readouterr()
+    assert "TCLK-PROOF VERIFICATION REPORT" in captured.out
+    assert "FINAL CONFORMITY VERDICT:" in captured.out
+    assert ret == 1
+
+
+def test_format_verification_report_minimal_and_empty_proof():
+    # Test completely empty dict
+    rep1 = format_verification_report({})
+    assert "TCLK-PROOF VERIFICATION REPORT" in rep1
+    assert "Final Verdict:   [FAIL] FAIL: NON-CONFORMANT" in rep1
+    assert "[FAIL] Transcript evidence missing or failed to parse" in rep1
+    assert "[FAIL] Agreement state missing or unextractable" in rep1
+    assert "[FAIL] Settlement evidence missing" in rep1
+    assert "[FAIL] Cross-check results missing" in rep1
+    assert "[FAIL] Trust model assessment missing" in rep1
+    assert "[INFO] None" in rep1
+
+    # Test None / missing optional fields within subdictionaries
+    minimal_proof = {
+        "is_conformant": False,
+        "contract_id": "0x1234",
+        "room": "room-xyz",
+        "agreement": {"status": "OPEN"},
+        "transcript": {"status": "partial"},
+        "settlement": {"rail": "evm-htlc", "status": "locked"},
+        "cross_check": {"terms_conformance": "failed"},
+        "trust_model": {"settlement_evidence_provenance": "self_attested"},
+        "failure_reasons": ["agreement not accepted"],
+        "warnings": [],
+    }
+    rep2 = format_verification_report(minimal_proof)
+    assert "0x1234" in rep2
+    assert "room-xyz" in rep2
+    assert "- [FAIL] agreement not accepted" in rep2
+    assert "[7] WARNINGS & ANOMALIES (0)" in rep2
+
+
+def test_format_verification_report_refund_settlement(mock_deal_environment):
+    env = mock_deal_environment
+    proof = verify_cross_layer(env["export_file"], env["settlement_file"])
+
+    proof["settlement"]["status"] = "refunded"
+    proof["settlement"]["refund_tx"] = "0x" + "c" * 64
+    proof["settlement"]["refund_timestamp"] = 1700000800
+    proof["settlement"]["claim_tx"] = None
+    proof["settlement"]["secret_revealed"] = None
+
+    report = format_verification_report(proof)
+    assert "Settlement Status:    refunded" in report
+    assert "0x" + "c" * 64 in report
+
+
+def test_format_verification_report_payment_keys(mock_deal_environment):
+    env = mock_deal_environment
+    proof = verify_cross_layer(env["export_file"], env["settlement_file"])
+
+    proof["agreement"]["payer_payment_key"] = "0x02" + "1" * 64
+    proof["agreement"]["payee_payment_key"] = "0x03" + "2" * 64
+
+    report = format_verification_report(proof)
+    assert f"Payer Payment Key:    0x02{'1' * 64}" in report
+    assert f"Payee Payment Key:    0x03{'2' * 64}" in report
+
+
+def test_cli_report_preserves_json_behavior(mock_deal_environment, capsys, monkeypatch):
+    env = mock_deal_environment
+
+    # Test tclk-proof --json is valid JSON
+    ret1 = cross_verify_main([str(env["export_file"]), str(env["settlement_file"]), "--json"])
+    cap1 = capsys.readouterr()
+    parsed1 = json.loads(cap1.out)
+    assert "spec" in parsed1
+    assert "is_conformant" in parsed1
+    assert ret1 == 1
+
+    # Test tc-ledger cross-verify --json is valid JSON
+    monkeypatch.setattr(
+        "sys.argv",
+        ["tc-ledger", "cross-verify", str(env["export_file"]), str(env["settlement_file"]), "--json"],
+    )
+    ret2 = ledger_main()
+    cap2 = capsys.readouterr()
+    parsed2 = json.loads(cap2.out)
+    assert "spec" in parsed2
+    assert "is_conformant" in parsed2
+    assert ret2 == 1

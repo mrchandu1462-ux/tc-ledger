@@ -33,6 +33,7 @@ from nacl.signing import SigningKey
 from tc_ledger.cross_verify import (
     canonical_json_bytes,
     domain_hash,
+    format_verification_report,
     keccak256,
     verify_cross_layer,
 )
@@ -261,30 +262,10 @@ def run_demo() -> int:
 
         proof_path.write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
 
-        # 6. Output clean verification summary
-        print("TCLK-PROOF E2E DEMO")
-        print("===================")
+        # 6. Output clean verification summary and full report
+        report = format_verification_report(proof, trust_anchors={"chain_id": chain_id})
+        print(report)
         print("")
-        print("Transcript:")
-        print(f"  signatures              {'✓' if proof['transcript']['signatures_verified'] else '✗'}")
-        print(f"  Merkle commitment       {'✓' if proof['transcript']['merkle_inclusion_verified'] else '✗'}")
-        print("")
-        print("Agreement:")
-        print(f"  contract ID             {'✓' if proof['cross_check']['contract_id_binding'] == 'verified' else '✗'}")
-        print("")
-        print("EVM:")
-        print(f"  lock receipt             {'✓' if proof['settlement']['lock_tx'] else '✗'}")
-        print(f"  claim receipt            {'✓' if proof['settlement']['claim_tx'] else '✗'}")
-        print(f"  contract binding         {'✓' if proof['cross_check']['contract_id_binding'] == 'verified' else '✗'}")
-        print(f"  hashlock binding         {'✓' if proof['cross_check']['hashlock_binding'] == 'verified' else '✗'}")
-        print(f"  amount binding           {'✓' if proof['cross_check']['amount_binding'] == 'verified' else '✗'}")
-        print(f"  asset binding            {'✓' if proof['cross_check']['asset_binding'] == 'verified' else '✗'}")
-        print(f"  secret verification      {'✓' if proof['cross_check']['secret_verification'] == 'verified' else '✗'}")
-        print(f"  temporal ordering        {'✓' if proof['cross_check']['temporal_ordering'] == 'verified' else '✗'}")
-        print(f"  chain ID                 {'✓' if proof['settlement'].get('chain_id') == chain_id else '✓'}")
-        print("")
-        print("Result:")
-        print(f"  CONFORMANT {'✓' if proof['is_conformant'] else '✗'}")
 
         return 0 if proof["is_conformant"] else 1
 
