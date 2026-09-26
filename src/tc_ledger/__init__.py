@@ -50,6 +50,11 @@ from .cross_verify import (
     format_verification_report,
     load_tclk_proof_schema,
 )
+from .bundle import (
+    create_bundle,
+    verify_bundle,
+    load_tclk_bundle_schema,
+)
 
 __version__ = "0.3.0"
 
@@ -92,5 +97,8 @@ __all__ = [
     "verify_standalone_proof",
     "format_verification_report",
     "load_tclk_proof_schema",
+    "create_bundle",
+    "verify_bundle",
+    "load_tclk_bundle_schema",
     "main",
 ]

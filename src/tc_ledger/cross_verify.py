@@ -1731,7 +1731,216 @@ def main(argv: Optional[list[str]] = None) -> int:
     """CLI entrypoint for tclk-proof."""
     raw_args = list(argv) if argv is not None else list(sys.argv[1:])
 
-    # Handle 'tclk-proof verify-proof <proof.json>'
+    # 1. Handle 'tclk-proof bundle ...'
+    if raw_args and raw_args[0] in ("bundle", "create-bundle", "create_bundle"):
+        from tc_ledger.bundle import create_bundle
+        raw_args = raw_args[1:]
+        b_parser = argparse.ArgumentParser(
+            prog="tclk-proof bundle",
+            description="Generate a self-contained .tclk-bundle evidence archive."
+        )
+        b_parser.add_argument("transcript", nargs="?", default=None, help="Path to room export (.jsonl) or DealArchive (.json)")
+        b_parser.add_argument("settlement", nargs="?", default=None, help="Path to settlement evidence (.json)")
+        b_parser.add_argument("--transcript", dest="transcript_flag", help="Path to room export (.jsonl) or DealArchive (.json)")
+        b_parser.add_argument("--settlement", dest="settlement_flag", help="Path to settlement evidence (.json)")
+        b_parser.add_argument("--rpc-url", help="EVM JSON-RPC endpoint URL")
+        b_parser.add_argument("--lock-tx", help="On-chain lock transaction hash")
+        b_parser.add_argument("--claim-tx", help="On-chain claim transaction hash")
+        b_parser.add_argument("--refund-tx", help="On-chain refund transaction hash")
+        b_parser.add_argument("--htlc-address", help="Expected HTLC contract address")
+        b_parser.add_argument("--chain-id", type=int, help="Expected EVM network chain ID")
+        b_parser.add_argument("--room", help="Expected room identifier trust anchor")
+        b_parser.add_argument("--expected-root", help="Expected room export Merkle root hex")
+        b_parser.add_argument("--expected-contract-id", help="Expected contract ID trust anchor")
+        b_parser.add_argument("--output", "-o", help="Output path for .tclk-bundle archive")
+        b_parser.add_argument("--json", action="store_true", help="Output bundle manifest as JSON")
+        b_parser.add_argument("--report", action="store_true", help="Output human-readable report")
+
+        try:
+            b_args = b_parser.parse_args(raw_args)
+        except SystemExit as e:
+            return 2 if e.code != 0 else 0
+
+        transcript_src = b_args.transcript_flag or b_args.transcript
+        settlement_src = b_args.settlement_flag or b_args.settlement
+        is_json = getattr(b_args, "json", False)
+
+        if not transcript_src:
+            if is_json:
+                print(json.dumps({"valid": False, "error": "Missing required argument: transcript"}, indent=2))
+            else:
+                print("error: the following arguments are required: transcript (positional or --transcript)", file=sys.stderr)
+            return 2
+
+        trust_anchors = {
+            "room": b_args.room,
+            "expected_root": b_args.expected_root,
+            "expected_contract_id": b_args.expected_contract_id,
+            "chain_id": getattr(b_args, "chain_id", None),
+        }
+        rpc_anchors = None
+        if getattr(b_args, "rpc_url", None):
+            rpc_anchors = {
+                "rpc_url": b_args.rpc_url,
+                "lock_tx": getattr(b_args, "lock_tx", None),
+                "claim_tx": getattr(b_args, "claim_tx", None),
+                "refund_tx": getattr(b_args, "refund_tx", None),
+                "htlc_address": getattr(b_args, "htlc_address", None),
+                "chain_id": getattr(b_args, "chain_id", None),
+            }
+
+        try:
+            manifest, bundle_bytes = create_bundle(
+                transcript_source=transcript_src,
+                settlement_source=settlement_src,
+                trust_anchors=trust_anchors,
+                rpc_anchors=rpc_anchors,
+                output_path=b_args.output,
+            )
+        except FileNotFoundError as exc:
+            if is_json:
+                print(json.dumps({"valid": False, "error": f"I/O Error: {exc}"}, indent=2))
+            else:
+                print(f"I/O Error: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            if is_json:
+                print(json.dumps({"valid": False, "error": f"Runtime Error: {exc}"}, indent=2))
+            else:
+                print(f"Runtime Error: {exc}", file=sys.stderr)
+            return 2
+
+        if is_json:
+            print(json.dumps(manifest, indent=2))
+        else:
+            if b_args.output:
+                print(f"BUNDLE CREATED: {b_args.output} ({len(bundle_bytes)} bytes)")
+            else:
+                print(f"BUNDLE CREATED ({len(bundle_bytes)} bytes)")
+            print(f"Contract ID: {manifest.get('contract_id')}")
+            print(f"Room:        {manifest.get('room')}")
+        return 0
+
+    # 2. Handle 'tclk-proof verify-bundle <bundle.tclk-bundle>'
+    if raw_args and raw_args[0] in ("verify-bundle", "verify_bundle"):
+        from tc_ledger.bundle import verify_bundle
+        raw_args = raw_args[1:]
+        vb_parser = argparse.ArgumentParser(
+            prog="tclk-proof verify-bundle",
+            description="Verify an offline .tclk-bundle evidence archive."
+        )
+        vb_parser.add_argument("bundle", nargs="?", default=None, help="Path to .tclk-bundle archive")
+        vb_parser.add_argument("--bundle", dest="bundle_flag", help="Path to .tclk-bundle archive")
+        vb_parser.add_argument("--room", help="Expected room identifier trust anchor")
+        vb_parser.add_argument("--expected-root", help="Expected room export Merkle root hex")
+        vb_parser.add_argument("--expected-contract-id", help="Expected contract ID trust anchor")
+        vb_parser.add_argument("--chain-id", type=int, help="Expected EVM network chain ID")
+        vb_parser.add_argument("--output", help="Optional output path to write verification result JSON")
+        vb_parser.add_argument("--json", action="store_true", help="Output machine-readable JSON result")
+        vb_parser.add_argument("--report", action="store_true", help="Output human-readable verification report")
+
+        try:
+            vb_args = vb_parser.parse_args(raw_args)
+        except SystemExit as e:
+            return 2 if e.code != 0 else 0
+
+        bundle_source = vb_args.bundle_flag or vb_args.bundle
+        is_json = getattr(vb_args, "json", False)
+        is_report = getattr(vb_args, "report", False)
+
+        if not bundle_source:
+            if is_json:
+                print(json.dumps({"valid": False, "error": "Missing required argument: bundle (positional or --bundle)"}, indent=2))
+            else:
+                print("error: the following arguments are required: bundle (positional or --bundle)", file=sys.stderr)
+            return 2
+
+        trust_anchors = {
+            "room": vb_args.room,
+            "expected_root": vb_args.expected_root,
+            "expected_contract_id": vb_args.expected_contract_id,
+            "chain_id": getattr(vb_args, "chain_id", None),
+        }
+
+        try:
+            result = verify_bundle(bundle_source, trust_anchors=trust_anchors)
+        except FileNotFoundError as exc:
+            if is_json:
+                print(json.dumps({"valid": False, "error": f"I/O Error: {exc}"}, indent=2))
+            else:
+                print(f"I/O Error: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            if is_json:
+                print(json.dumps({"valid": False, "error": f"Bundle Error: {exc}"}, indent=2))
+            else:
+                print(f"Bundle Error: {exc}", file=sys.stderr)
+            return 2
+
+        if vb_args.output:
+            try:
+                out_p = Path(vb_args.output)
+                out_p.parent.mkdir(parents=True, exist_ok=True)
+                out_p.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            except Exception as exc:
+                if is_json:
+                    print(json.dumps({"valid": False, "error": f"I/O Error writing output: {exc}"}, indent=2))
+                else:
+                    print(f"I/O Error writing output: {exc}", file=sys.stderr)
+                return 2
+
+        is_valid = result.get("valid", False)
+        is_conformant = result.get("is_conformant", False)
+        manifest_verified = result.get("manifest_verified", False)
+        fatal_bundle_error = (not manifest_verified) or any(
+            "checksum mismatch" in r
+            or "missing required" in r
+            or "unexpected archive" in r
+            or "path traversal" in r
+            or "illegal characters" in r
+            or "duplicate archive" in r
+            or "malformed manifest" in r
+            or "manifest schema validation failed" in r
+            or "failed to parse proof.json" in r
+            or "schema validation failed" in r
+            or "invalid zip" in r.lower()
+            for r in result.get("failure_reasons", [])
+        )
+
+        # Fatal archive / checksum / tampering errors exit with code 2
+        if fatal_bundle_error:
+            if is_json:
+                print(json.dumps(result, indent=2))
+            else:
+                print("BUNDLE VERIFICATION: INVALID (CORRUPTED / TAMPERED)", file=sys.stderr)
+                for reason in result.get("failure_reasons", []):
+                    print(f"  - Failure: {reason}", file=sys.stderr)
+            return 2
+
+        if is_json:
+            print(json.dumps(result, indent=2))
+        elif is_report:
+            report_proof = dict(result.get("proof", {}))
+            report_proof["is_conformant"] = is_conformant
+            report_proof["failure_reasons"] = result.get("failure_reasons", [])
+            print(format_verification_report(report_proof, trust_anchors=trust_anchors))
+        else:
+            if is_conformant:
+                print("BUNDLE VERIFICATION: CONFORMANT (SUCCESS)")
+                print(f"Contract ID: {result.get('contract_id')}")
+                print(f"Room:        {result.get('room')}")
+                print(f"Provenance:  {result.get('provenance')}")
+            else:
+                print("BUNDLE VERIFICATION: VALID (NON-CONFORMANT)")
+                print(f"Contract ID: {result.get('contract_id')}")
+                print(f"Room:        {result.get('room')}")
+                print(f"Provenance:  {result.get('provenance')}")
+                for reason in result.get("failure_reasons", []):
+                    print(f"  - Note: {reason}")
+
+        return 0 if is_conformant else 1
+
+    # 3. Handle 'tclk-proof verify-proof <proof.json>'
     if raw_args and raw_args[0] in ("verify-proof", "verify_proof"):
         raw_args = raw_args[1:]
         vp_parser = argparse.ArgumentParser(

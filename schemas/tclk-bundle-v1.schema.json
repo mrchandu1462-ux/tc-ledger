@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrchandu1462-ux/tc-ledger/schemas/tclk-bundle-v1.schema.json",
+  "title": "TCLK Bundle Manifest v1",
+  "description": "JSON Schema for TCLK self-contained evidence archive manifest (manifest.json)",
+  "type": "object",
+  "required": [
+    "spec",
+    "version",
+    "contract_id",
+    "room",
+    "files"
+  ],
+  "properties": {
+    "spec": {
+      "type": "string",
+      "const": "tclk-bundle/1"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "contract_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "room": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "files": {
+      "type": "object",
+      "required": [
+        "transcript.jsonl",
+        "receipts.json",
+        "proof.json",
+        "report.txt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "transcript.jsonl": {
+          "$ref": "#/$defs/fileEntry"
+        },
+        "receipts.json": {
+          "$ref": "#/$defs/fileEntry"
+        },
+        "proof.json": {
+          "$ref": "#/$defs/fileEntry"
+        },
+        "report.txt": {
+          "$ref": "#/$defs/fileEntry"
+        }
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "fileEntry": {
+      "type": "object",
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
