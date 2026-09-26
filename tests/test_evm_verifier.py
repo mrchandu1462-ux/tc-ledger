@@ -24,10 +24,13 @@ from tc_ledger.evm_verifier import (
     EVENT_LOCKED_TOPIC0,
     EVENT_CLAIMED_TOPIC0,
     EVENT_REFUNDED_TOPIC0,
+    EVENT_ERC20_TRANSFER_TOPIC0,
+    ZERO_ADDRESS,
     EvmVerificationError,
     build_rpc_settlement_evidence,
     fetch_transaction_receipt,
     parse_and_verify_htlc_event,
+    parse_and_verify_erc20_transfer,
 )
 import base58
 import base64
@@ -162,6 +165,22 @@ def _make_refunded_log(htlc_address: str, contract_id: str) -> dict[str, Any]:
         "address": htlc_address,
         "topics": [EVENT_REFUNDED_TOPIC0, contract_id.lower()],
         "data": "0x",
+    }
+
+
+def _make_erc20_transfer_log(
+    token_address: str,
+    from_address: str,
+    to_address: str,
+    amount: int,
+) -> dict[str, Any]:
+    norm_from = "0x" + "0" * 24 + from_address.lower().replace("0x", "")
+    norm_to = "0x" + "0" * 24 + to_address.lower().replace("0x", "")
+    data_hex = "0x" + hex(amount)[2:].zfill(64)
+    return {
+        "address": token_address,
+        "topics": [EVENT_ERC20_TRANSFER_TOPIC0, norm_from, norm_to],
+        "data": data_hex,
     }
 
 
@@ -388,12 +407,18 @@ def test_evm_wrong_asset(mock_deal_transcript):
         hashlock=env["hashlock"],
         refund_timestamp=1700000600,
     )
+    transfer_log = _make_erc20_transfer_log(
+        token_address="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        from_address=env["payer_addr"],
+        to_address=env["htlc_addr"],
+        amount=2500000,
+    )
     receipts = {
         env["lock_tx"].lower(): {
             "status": "0x1",
             "transactionHash": env["lock_tx"],
             "blockNumber": "0x10",
-            "logs": [bad_locked_log],
+            "logs": [transfer_log, bad_locked_log],
         }
     }
     server = MockRpcServer(receipts)
@@ -840,3 +865,412 @@ def test_evm_refund_without_lock_fails_closed(mock_deal_transcript):
             )
     finally:
         server.stop()
+
+
+# Test 23: Valid ERC-20 Transfer: Locked + correct Transfer in same receipt
+def test_evm_erc20_valid_dual_log_verification(tmp_path: Path):
+    room = "test-erc20-room"
+    payer_sk, payer_did = _make_keypair()
+    payee_sk, payee_did = _make_keypair()
+
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"  # USDC
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+
+    secret_preimage = "0x" + "c" * 64
+    secret_bytes = bytes.fromhex("c" * 64)
+    import hashlib
+    hashlock = "0x" + hashlib.sha256(secret_bytes).hexdigest()
+
+    offer_frame = {
+        "type": "offer",
+        "id": "offer-erc20-001",
+        "role": "payer",
+        "amount": str(amount),
+        "asset": token_addr,
+        "lock": "hash",
+        "claimByMs": 1700000600000,
+        "refundAfterMs": 1700000600000,
+        "expiresMs": 1700000900000,
+        "rails": ["evm-htlc"],
+    }
+    accept_frame = {
+        "type": "accept",
+        "ref": "offer-erc20-001",
+        "statement": hashlock,
+        "nonce": "nonce-erc20-1",
+    }
+    accept_core = {
+        "from": payee_did,
+        "ref": "offer-erc20-001",
+        "statement": hashlock,
+        "nonce": "nonce-erc20-1",
+    }
+    payload = {"offer": offer_frame, "accept": accept_core}
+    cid = domain_hash("contract", canonical_json_bytes(payload))
+
+    rec1 = _sign_record(payer_sk, payer_did, room, json.dumps(offer_frame), seq=1)
+    rec2 = _sign_record(payee_sk, payee_did, room, json.dumps(accept_frame), seq=2)
+
+    export_file = tmp_path / f"{room}.jsonl"
+    export_file.write_bytes(b"".join([
+        json.dumps(rec1).encode("utf-8") + b"\n",
+        json.dumps(rec2).encode("utf-8") + b"\n",
+    ]))
+
+    lock_tx = "0x" + "7" * 64
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock=hashlock,
+        refund_timestamp=1700000600,
+    )
+    transfer_log = _make_erc20_transfer_log(
+        token_address=token_addr,
+        from_address=payer_addr,
+        to_address=htlc_addr,
+        amount=amount,
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": lock_tx,
+        "blockNumber": "0x10",
+        "logs": [transfer_log, locked_log],
+    }
+
+    # 1. Event parser verifies both logs
+    event = parse_and_verify_htlc_event(receipt, expected_htlc_address=htlc_addr, expected_contract_id=cid)
+    assert event["event_type"] == "Locked"
+    assert event["erc20_transfer_verified"] is True
+
+    # 2. End-to-end verification through RPC server
+    server = MockRpcServer({lock_tx.lower(): receipt})
+    server.start()
+    try:
+        proof = verify_cross_layer(
+            transcript_source=export_file,
+            trust_anchors={"chain_id": 31337},
+            rpc_anchors={
+                "rpc_url": server.url,
+                "lock_tx": lock_tx,
+                "htlc_address": htlc_addr,
+            },
+        )
+        assert proof["is_conformant"] is True
+        assert proof["cross_check"]["erc20_transfer_binding"] == "verified"
+        assert proof["settlement"]["erc20_transfer_verified"] is True
+    finally:
+        server.stop()
+
+
+# Test 24: Missing ERC-20 Transfer: Locked exists but no Transfer log in receipt -> reject
+def test_evm_erc20_missing_transfer_log():
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [locked_log],  # Missing Transfer log
+    }
+
+    with pytest.raises(EvmVerificationError, match="ERC-20 transfer event missing or mismatched"):
+        parse_and_verify_htlc_event(receipt)
+
+
+# Test 25: Wrong Token in Transfer log -> reject
+def test_evm_erc20_wrong_token_log():
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    different_token = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+    transfer_log = _make_erc20_transfer_log(
+        token_address=different_token,  # Mismatched token
+        from_address=payer_addr,
+        to_address=htlc_addr,
+        amount=amount,
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [transfer_log, locked_log],
+    }
+
+    with pytest.raises(EvmVerificationError, match="ERC-20 transfer event missing or mismatched"):
+        parse_and_verify_htlc_event(receipt)
+
+
+# Test 26: Wrong Sender in Transfer log -> reject
+def test_evm_erc20_wrong_sender_log():
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    other_sender = "0x9999999999999999999999999999999999999999"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+    transfer_log = _make_erc20_transfer_log(
+        token_address=token_addr,
+        from_address=other_sender,  # Mismatched sender
+        to_address=htlc_addr,
+        amount=amount,
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [transfer_log, locked_log],
+    }
+
+    with pytest.raises(EvmVerificationError, match="ERC-20 transfer event missing or mismatched"):
+        parse_and_verify_htlc_event(receipt)
+
+
+# Test 27: Wrong Recipient in Transfer log -> reject
+def test_evm_erc20_wrong_recipient_log():
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    other_recipient = "0x8888888888888888888888888888888888888888"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+    transfer_log = _make_erc20_transfer_log(
+        token_address=token_addr,
+        from_address=payer_addr,
+        to_address=other_recipient,  # Mismatched recipient
+        amount=amount,
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [transfer_log, locked_log],
+    }
+
+    with pytest.raises(EvmVerificationError, match="ERC-20 transfer event missing or mismatched"):
+        parse_and_verify_htlc_event(receipt)
+
+
+# Test 28: Wrong Amount in Transfer log -> reject
+def test_evm_erc20_wrong_amount_log():
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+    transfer_log = _make_erc20_transfer_log(
+        token_address=token_addr,
+        from_address=payer_addr,
+        to_address=htlc_addr,
+        amount=1000,  # Wrong amount transferred
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [transfer_log, locked_log],
+    }
+
+    with pytest.raises(EvmVerificationError, match="ERC-20 transfer event missing or mismatched"):
+        parse_and_verify_htlc_event(receipt)
+
+
+# Test 29: Multiple Transfer logs in receipt: 1 valid and 2 unrelated -> accept valid one
+def test_evm_erc20_multiple_transfer_logs_including_valid():
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+    unrelated_transfer_1 = _make_erc20_transfer_log(
+        token_address=token_addr,
+        from_address="0x4444444444444444444444444444444444444444",
+        to_address="0x5555555555555555555555555555555555555555",
+        amount=100,
+    )
+    valid_transfer = _make_erc20_transfer_log(
+        token_address=token_addr,
+        from_address=payer_addr,
+        to_address=htlc_addr,
+        amount=amount,
+    )
+    unrelated_transfer_2 = _make_erc20_transfer_log(
+        token_address="0xdac17f958d2ee523a2206206994597c13d831ec7",
+        from_address=payer_addr,
+        to_address=htlc_addr,
+        amount=5000000,
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [unrelated_transfer_1, valid_transfer, unrelated_transfer_2, locked_log],
+    }
+
+    event = parse_and_verify_htlc_event(receipt)
+    assert event["event_type"] == "Locked"
+    assert event["erc20_transfer_verified"] is True
+
+
+# Test 30: Native ETH Settlement: No Transfer log required
+def test_evm_native_eth_no_transfer_log_required():
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 1000000000000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=ZERO_ADDRESS,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [locked_log],  # No Transfer log required for native ETH
+    }
+
+    event = parse_and_verify_htlc_event(receipt)
+    assert event["event_type"] == "Locked"
+    assert event["erc20_transfer_verified"] is None
+
+
+# Test 31: Dirty Topic Padding in ERC-20 Transfer Log Rejected
+def test_evm_erc20_dirty_topic_padding_rejected():
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    htlc_addr = "0x1111111111111111111111111111111111111111"
+    payer_addr = "0x2222222222222222222222222222222222222222"
+    payee_addr = "0x3333333333333333333333333333333333333333"
+    amount = 5000000
+    cid = "0x" + "1" * 64
+
+    locked_log = _make_locked_log(
+        htlc_address=htlc_addr,
+        contract_id=cid,
+        payer=payer_addr,
+        payee=payee_addr,
+        token=token_addr,
+        amount=amount,
+        hashlock="0x" + "a" * 64,
+        refund_timestamp=1700000600,
+    )
+
+    # Malicious transfer log where upper 12 bytes of payer topic has dirty non-zero bits
+    dirty_from_topic = "0xdeadbeef" + "0" * 16 + payer_addr[2:]
+    dirty_transfer_log = {
+        "address": token_addr,
+        "topics": [
+            EVENT_ERC20_TRANSFER_TOPIC0,
+            dirty_from_topic,
+            "0x" + "0" * 24 + htlc_addr[2:],
+        ],
+        "data": "0x" + hex(amount)[2:].zfill(64),
+    }
+
+    receipt = {
+        "status": "0x1",
+        "transactionHash": "0x" + "8" * 64,
+        "blockNumber": "0x10",
+        "logs": [dirty_transfer_log, locked_log],
+    }
+
+    with pytest.raises(EvmVerificationError, match="ERC-20 transfer event missing or mismatched"):
+        parse_and_verify_htlc_event(receipt)

@@ -29,11 +29,123 @@ EVENT_LOCKED_TOPIC0 = "0x" + keccak256(b"Locked(bytes32,address,address,address,
 EVENT_CLAIMED_TOPIC0 = "0x" + keccak256(b"Claimed(bytes32,bytes32)").hex().lower()
 # Refunded(bytes32)
 EVENT_REFUNDED_TOPIC0 = "0x" + keccak256(b"Refunded(bytes32)").hex().lower()
+# Canonical ERC-20 Transfer event topic0:
+# Transfer(address,address,uint256)
+EVENT_ERC20_TRANSFER_TOPIC0 = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 class EvmVerificationError(ValueError):
     """Raised when an EVM receipt or on-chain event verification fails."""
     pass
+
+
+def parse_and_verify_erc20_transfer(
+    receipt: dict[str, Any],
+    token_address: str,
+    expected_payer: str,
+    expected_htlc_address: str,
+    expected_amount: str,
+) -> dict[str, Any]:
+    """
+    Scans the same transaction receipt for a matching ERC-20 Transfer event:
+      Transfer(address indexed from, address indexed to, uint256 value)
+    verifying:
+      - log.address == token_address (the asset contract)
+      - topics[0] == EVENT_ERC20_TRANSFER_TOPIC0
+      - topics[1] == expected_payer (ABI padded to 32 bytes)
+      - topics[2] == expected_htlc_address (ABI padded to 32 bytes)
+      - data == uint256(expected_amount)
+    """
+    norm_token = normalize_address(token_address)
+    norm_payer = normalize_address(expected_payer)
+    norm_htlc = normalize_address(expected_htlc_address)
+    norm_amount = normalize_amount_str(expected_amount)
+
+    if not norm_token or norm_token.lower() == ZERO_ADDRESS:
+        raise EvmVerificationError(f"invalid ERC-20 token address: {token_address}")
+    if not norm_payer:
+        raise EvmVerificationError(f"invalid payer address: {expected_payer}")
+    if not norm_htlc:
+        raise EvmVerificationError(f"invalid HTLC contract address: {expected_htlc_address}")
+    if norm_amount is None:
+        raise EvmVerificationError(f"invalid expected transfer amount: {expected_amount}")
+
+    logs = receipt.get("logs", [])
+    if not isinstance(logs, list) or len(logs) == 0:
+        raise EvmVerificationError("ERC-20 transfer verification failed: receipt contains no logs")
+
+    matching_transfers: list[dict[str, Any]] = []
+
+    for log in logs:
+        if not isinstance(log, dict):
+            continue
+
+        log_addr = normalize_address(log.get("address"))
+        if not log_addr or log_addr.lower() != norm_token.lower():
+            continue
+
+        topics = log.get("topics", [])
+        if not isinstance(topics, list) or len(topics) < 3:
+            continue
+
+        topic0 = str(topics[0]).lower()
+        if topic0 != EVENT_ERC20_TRANSFER_TOPIC0.lower():
+            continue
+
+        # topics[1] is indexed 'from' (payer), topics[2] is indexed 'to' (HTLC)
+        norm_t1 = normalize_hex(topics[1])
+        norm_t2 = normalize_hex(topics[2])
+        if not norm_t1 or len(norm_t1) != 66 or norm_t1[2:26] != "0" * 24:
+            continue
+        if not norm_t2 or len(norm_t2) != 66 or norm_t2[2:26] != "0" * 24:
+            continue
+
+        from_addr = "0x" + norm_t1[26:]
+        to_addr = "0x" + norm_t2[26:]
+
+        if from_addr.lower() != norm_payer.lower():
+            continue
+        if to_addr.lower() != norm_htlc.lower():
+            continue
+
+        # Extract amount from log data
+        data_raw = log.get("data")
+        if data_raw is None:
+            continue
+
+        if isinstance(data_raw, int):
+            amount_val = str(data_raw)
+        elif isinstance(data_raw, str):
+            data_clean = data_raw.strip()
+            if data_clean.startswith("0x") or data_clean.startswith("0X"):
+                data_clean = data_clean[2:]
+            if not data_clean:
+                amount_val = "0"
+            else:
+                try:
+                    amount_val = str(int(data_clean, 16))
+                except ValueError:
+                    continue
+        else:
+            continue
+
+        if normalize_amount_str(amount_val) != norm_amount:
+            continue
+
+        matching_transfers.append({
+            "token": log_addr,
+            "from": from_addr,
+            "to": to_addr,
+            "amount": amount_val,
+        })
+
+    if not matching_transfers:
+        raise EvmVerificationError(
+            f"ERC-20 transfer event missing or mismatched in receipt: expected Transfer({norm_payer} -> {norm_htlc}, amount={norm_amount}) on token {norm_token}"
+        )
+
+    return matching_transfers[0]
 
 
 def rpc_call(rpc_url: str, method: str, params: list[Any], timeout: float = 10.0) -> Any:
@@ -122,6 +234,7 @@ def parse_and_verify_htlc_event(
 ) -> dict[str, Any]:
     """
     Parses and verifies HTLC events (Locked, Claimed, Refunded) from a transaction receipt.
+    For ERC-20 Locked events, independently verifies the matching Transfer event in the same receipt.
     Fails closed if the transaction reverted, wrong address, or ambiguous logs.
     """
     status_raw = receipt.get("status")
@@ -187,8 +300,14 @@ def parse_and_verify_htlc_event(
             if len(topics) < 4:
                 continue
             cid = normalize_hex(topics[1])
-            payer = normalize_address("0x" + topics[2][-40:])
-            payee = normalize_address("0x" + topics[3][-40:])
+            norm_t2 = normalize_hex(topics[2])
+            norm_t3 = normalize_hex(topics[3])
+            if not norm_t2 or len(norm_t2) != 66 or norm_t2[2:26] != "0" * 24:
+                continue
+            if not norm_t3 or len(norm_t3) != 66 or norm_t3[2:26] != "0" * 24:
+                continue
+            payer = "0x" + norm_t2[26:]
+            payee = "0x" + norm_t3[26:]
 
             if len(data_hex) < 256:  # 4 * 32 bytes (token, amount, hashlock, refundTimestamp)
                 continue
@@ -197,6 +316,19 @@ def parse_and_verify_htlc_event(
             amount = str(int(data_hex[64:128], 16))
             hashlock = normalize_hex("0x" + data_hex[128:192])
             refund_ts = int(data_hex[192:256], 16)
+
+            # Dual-Log ERC-20 Verification:
+            # If asset is not native ETH (zero address), independently verify matching Transfer event in SAME receipt
+            erc20_verified = None
+            if token and token.lower() != ZERO_ADDRESS:
+                parse_and_verify_erc20_transfer(
+                    receipt=receipt,
+                    token_address=token,
+                    expected_payer=payer,
+                    expected_htlc_address=log_addr,
+                    expected_amount=amount,
+                )
+                erc20_verified = True
 
             matching_events.append({
                 "event_type": "Locked",
@@ -210,6 +342,7 @@ def parse_and_verify_htlc_event(
                 "refund_timestamp": refund_ts,
                 "block_number": block_number,
                 "tx_hash": receipt.get("transactionHash"),
+                "erc20_transfer_verified": erc20_verified,
             })
 
         # 2. Check Claimed Event
@@ -361,12 +494,13 @@ def build_rpc_settlement_evidence(
         status = "refunded"
 
     amount = lock_event["amount"] if lock_event else "0"
-    asset = lock_event["token"] if lock_event else "0x0000000000000000000000000000000000000000"
+    asset = lock_event["token"] if lock_event else ZERO_ADDRESS
     hashlock = lock_event["hashlock"] if lock_event else ""
     payer = lock_event.get("payer_address") if lock_event else None
     payee = lock_event.get("payee_address") if lock_event else None
     refund_ts = lock_event.get("refund_timestamp") if lock_event else None
     block_num = claim_event["block_number"] if claim_event else (refund_event["block_number"] if refund_event else (lock_event["block_number"] if lock_event else None))
+    erc20_verified = lock_event.get("erc20_transfer_verified") if lock_event else None
 
     return SettlementEvidence(
         rail="evm-htlc",
@@ -388,4 +522,5 @@ def build_rpc_settlement_evidence(
         refund_tx=refund_tx,
         block_number=block_num,
         chain_id=chain_id,
+        erc20_transfer_verified=erc20_verified,
     )

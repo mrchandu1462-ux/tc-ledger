@@ -277,6 +277,13 @@
             "string",
             "null"
           ]
+        },
+        "erc20_transfer_verified": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "True if an ERC-20 Transfer event matching (payer, htlc, amount) was independently verified in the lock receipt"
         }
       }
     },
@@ -390,6 +397,15 @@
             "verified_via_payment_key",
             "unverified_external_mapping",
             "mismatch",
+            "not_applicable"
+          ]
+        },
+        "erc20_transfer_binding": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "failed",
+            "unverified",
             "not_applicable"
           ]
         }

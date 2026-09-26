@@ -1238,3 +1238,36 @@ def test_standalone_proof_recomputed_inclusion_proof():
     res_tampered = verify_standalone_proof(tampered_proof)
     assert res_tampered["valid"] is False
     assert any("Merkle inclusion proof #0 failed" in r for r in res_tampered["failure_reasons"])
+
+
+def test_standalone_proof_forged_erc20_transfer_verified():
+    """Test rejection of forged erc20_transfer_verified: true in self-attested proofs."""
+    proof_path = Path(__file__).resolve().parents[1] / "examples" / "output" / "proof.json"
+    proof_data = json.loads(proof_path.read_text(encoding="utf-8"))
+
+    # Set ERC-20 asset (USDC)
+    token_addr = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    proof_data["agreement"]["asset"] = token_addr
+    proof_data["settlement"]["asset"] = token_addr
+
+    # Scenario 1: RPC verified but erc20_transfer_verified: false -> fails closed
+    proof_data["settlement"]["provenance"] = "rpc_receipt_verified"
+    proof_data["trust_model"]["settlement_evidence_provenance"] = "rpc_receipt_verified"
+    proof_data["settlement"]["erc20_transfer_verified"] = False
+
+    res1 = verify_standalone_proof(proof_data)
+    assert res1["valid"] is False
+    assert res1["is_conformant"] is False
+    assert any("ERC-20 token transfer event not verified" in r for r in res1["failure_reasons"])
+
+    # Scenario 2: Self-attested forged proof claiming erc20_transfer_verified: true and is_conformant: true
+    proof_data["settlement"]["provenance"] = "self_attested"
+    proof_data["trust_model"]["settlement_evidence_provenance"] = "self_attested"
+    proof_data["trust_model"]["on_chain_execution_proven"] = False
+    proof_data["settlement"]["erc20_transfer_verified"] = True
+    proof_data["is_conformant"] = True
+
+    res2 = verify_standalone_proof(proof_data)
+    assert res2["valid"] is False
+    assert res2["is_conformant"] is False
+    assert any("self_attested settlement evidence cannot prove ERC-20 transfer" in r or "self_attested settlement evidence cannot claim is_conformant" in r for r in res2["failure_reasons"])

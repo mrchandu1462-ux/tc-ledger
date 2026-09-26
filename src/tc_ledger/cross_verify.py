@@ -208,6 +208,7 @@ class SettlementEvidence:
     refund_tx: Optional[str] = None
     block_number: Optional[int] = None
     chain_id: Optional[int] = None
+    erc20_transfer_verified: Optional[bool] = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -317,6 +318,8 @@ def parse_settlement_evidence(data: dict[str, Any]) -> SettlementEvidence:
     refund_tx = data.get("refund_tx", data.get("refundTx", data.get("refund_ref")))
     block_num = data.get("block_number", data.get("blockNumber"))
     chain_id = data.get("chain_id", data.get("chainId"))
+    raw_erc20_verified = data.get("erc20_transfer_verified")
+    erc20_transfer_verified = bool(raw_erc20_verified) if raw_erc20_verified is not None else None
 
     # External caller-supplied settlement evidence loaded from static JSON or dictionary
     # is UNTRUSTED and MUST ALWAYS be forced to "self_attested".
@@ -343,6 +346,7 @@ def parse_settlement_evidence(data: dict[str, Any]) -> SettlementEvidence:
         refund_tx=refund_tx,
         block_number=int(block_num) if block_num is not None else None,
         chain_id=int(chain_id) if chain_id is not None else None,
+        erc20_transfer_verified=erc20_transfer_verified,
         extra=data,
     )
 
@@ -952,6 +956,23 @@ def verify_cross_layer(
             f"payee DID ({agreement.payee_did}) to EVM address ({settlement.payee_address}) is an unverified external mapping"
         )
 
+    # Dual-Log ERC-20 Transfer Event Consistency Check
+    ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+    norm_agr_asset = normalize_address(agreement.asset)
+    norm_set_asset = normalize_address(settlement.asset)
+    is_erc20_deal = (norm_agr_asset and norm_agr_asset.lower() != ZERO_ADDRESS) or (norm_set_asset and norm_set_asset.lower() != ZERO_ADDRESS)
+    erc20_transfer_binding = "not_applicable"
+
+    if is_erc20_deal:
+        if settlement.provenance in ("rpc_receipt_verified", "cryptographic_receipt_proof"):
+            if settlement.erc20_transfer_verified is True:
+                erc20_transfer_binding = "verified"
+            else:
+                erc20_transfer_binding = "failed"
+                terms_failures.append("ERC-20 token transfer event not verified in settlement transaction receipt")
+        else:
+            erc20_transfer_binding = "unverified"
+
     terms_conformance = "verified" if len(terms_failures) == 0 else "failed"
     failure_reasons.extend(terms_failures)
 
@@ -1014,6 +1035,7 @@ def verify_cross_layer(
             "claim_tx": settlement.claim_tx,
             "refund_tx": settlement.refund_tx,
             "secret_revealed": settlement.secret,
+            "erc20_transfer_verified": settlement.erc20_transfer_verified,
         },
         "cross_check": {
             "terms_conformance": terms_conformance,
@@ -1028,6 +1050,7 @@ def verify_cross_layer(
             "settlement_lifecycle": settlement_lifecycle,
             "address_binding_payer": payer_address_binding,
             "address_binding_payee": payee_address_binding,
+            "erc20_transfer_binding": erc20_transfer_binding,
         },
         "trust_model": {
             "transcript_authenticity": transcript_authenticity,
@@ -1214,6 +1237,9 @@ def format_verification_report(
         lines.append(f"  Refund Transaction:   {st.get('refund_tx', 'N/A')} ({_fmt_ts(st.get('refund_timestamp'), is_ms=False)})")
         lines.append(f"  Payer Address:        {st.get('payer_address', 'N/A')}")
         lines.append(f"  Payee Address:        {st.get('payee_address', 'N/A')}")
+        erc20_verified = st.get("erc20_transfer_verified")
+        if erc20_verified is not None:
+            lines.append(f"  ERC-20 Transfer Log:  {_tag_status(erc20_verified)}")
         secret = st.get("secret_revealed")
         secret_disp = f"{secret[:10]}...{secret[-8:]}" if secret and len(secret) > 20 else (secret or "None")
         lines.append(f"  Revealed Preimage:    {secret_disp}")
@@ -1234,6 +1260,8 @@ def format_verification_report(
         lines.append(f"  Hashlock Binding:     {_tag_status(cc.get('hashlock_binding'))}")
         lines.append(f"  Amount Binding:       {_tag_status(cc.get('amount_binding'))}")
         lines.append(f"  Asset / Token Binding:{_tag_status(cc.get('asset_binding'))}")
+        if "erc20_transfer_binding" in cc and cc.get("erc20_transfer_binding") != "not_applicable":
+            lines.append(f"  ERC-20 Transfer Bind: {_tag_status(cc.get('erc20_transfer_binding'))}")
         lines.append(f"  Secret Preimage Check:{_tag_status(cc.get('secret_verification'))}")
         lines.append(f"  Temporal Ordering:    {_tag_status(cc.get('temporal_ordering'))}")
         lines.append(f"  Settlement Lifecycle: {_tag_status(cc.get('settlement_lifecycle'))}")
@@ -1322,6 +1350,7 @@ def verify_standalone_proof(
     - Secret preimage validation: sha256(secret) == hashlock
     - Internal cross-layer semantic equality bindings
     - Fail-closed trust model consistency: never elevates self_attested provenance.
+    - ERC-20 transfer event consistency verification when asset is not native ETH.
     """
     if isinstance(proof_doc, (str, Path)):
         p = Path(proof_doc)
@@ -1630,6 +1659,29 @@ def verify_standalone_proof(
         temporal_match = False
         failure_reasons.append(f"temporal ordering violation: claim_timestamp ({claim_ts}) > refund_timestamp ({refund_ts})")
 
+    # 10. Dual-Log ERC-20 Transfer Check
+    ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+    norm_proof_agr_asset = normalize_address(agreement.get("asset"))
+    norm_proof_set_asset = normalize_address(settlement.get("asset"))
+    is_erc20_deal = (norm_proof_agr_asset and norm_proof_agr_asset.lower() != ZERO_ADDRESS) or (norm_proof_set_asset and norm_proof_set_asset.lower() != ZERO_ADDRESS)
+    erc20_transfer_binding = "not_applicable"
+
+    if is_erc20_deal:
+        claimed_erc20_verified = settlement.get("erc20_transfer_verified")
+        if provenance in ("rpc_receipt_verified", "cryptographic_receipt_proof"):
+            if claimed_erc20_verified is True:
+                erc20_transfer_binding = "verified"
+            else:
+                erc20_transfer_binding = "failed"
+                crypto_valid = False
+                failure_reasons.append("ERC-20 token transfer event not verified in settlement evidence")
+        elif provenance == "self_attested":
+            if claimed_erc20_verified is True or claimed_conformant:
+                crypto_valid = False
+                trust_model_ok = False
+                failure_reasons.append("trust model violation: self_attested settlement evidence cannot prove ERC-20 transfer execution")
+            erc20_transfer_binding = "unverified"
+
     # Retain recorded failure reasons from proof
     for recorded_f in proof.get("failure_reasons", []):
         if recorded_f not in failure_reasons:
@@ -1661,6 +1713,7 @@ def verify_standalone_proof(
             "asset_binding": "verified" if asset_match else "failed",
             "temporal_ordering": "verified" if temporal_match else "failed",
             "trust_model_consistency": "verified" if trust_model_ok else "failed",
+            "erc20_transfer_binding": erc20_transfer_binding,
         },
         "trust_model": {
             "settlement_evidence_provenance": provenance,
