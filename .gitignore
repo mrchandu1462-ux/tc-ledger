@@ -29,3 +29,5 @@ node_modules/
 tclk-rail-evm/node_modules/
 tclk-rail-evm/dist/
 tclk-rail-evm/cache/
+
+examples/output/anvil_demo_room.jsonl
