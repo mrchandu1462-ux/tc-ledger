@@ -19,6 +19,7 @@ from tc_ledger.cross_verify import (
     verify_cross_layer,
     main as cross_verify_main,
 )
+from tc_ledger.ledger import main as ledger_main
 from tc_ledger.evm_verifier import (
     EVENT_LOCKED_TOPIC0,
     EVENT_CLAIMED_TOPIC0,
@@ -630,12 +631,13 @@ def test_evm_valid_receipt_verification_conformant(mock_deal_transcript):
 
 
 # Test 15: CLI Integration with --rpc-url
-def test_evm_cli_rpc_verification(mock_deal_transcript):
+def test_evm_cli_rpc_verification(mock_deal_transcript, capsys, monkeypatch):
     env = mock_deal_transcript
     server = MockRpcServer(env["receipts"])
     server.start()
     try:
-        ret = cross_verify_main([
+        # 1. tclk-proof --json -> exit 0
+        ret_json = cross_verify_main([
             str(env["export_file"]),
             "--rpc-url", server.url,
             "--lock-tx", env["lock_tx"],
@@ -644,7 +646,61 @@ def test_evm_cli_rpc_verification(mock_deal_transcript):
             "--chain-id", "31337",
             "--json",
         ])
-        assert ret == 0  # Conformant exit code 0
+        cap_json = capsys.readouterr()
+        assert ret_json == 0
+        proof_json = json.loads(cap_json.out)
+        assert proof_json["is_conformant"] is True
+        assert proof_json["trust_model"]["settlement_evidence_provenance"] == "rpc_receipt_verified"
+
+        # 2. tclk-proof --report -> exit 0
+        ret_rep = cross_verify_main([
+            "verify",
+            str(env["export_file"]),
+            "--rpc-url", server.url,
+            "--lock-tx", env["lock_tx"],
+            "--claim-tx", env["claim_tx"],
+            "--htlc-address", env["htlc_addr"],
+            "--chain-id", "31337",
+            "--report",
+        ])
+        cap_rep = capsys.readouterr()
+        assert ret_rep == 0
+        assert "FINAL CONFORMITY VERDICT: [OK] PASS: CONFORMANT" in cap_rep.out
+
+        # 3. tc-ledger cross-verify --report -> exit 0
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "tc-ledger", "cross-verify", str(env["export_file"]),
+                "--rpc-url", server.url,
+                "--lock-tx", env["lock_tx"],
+                "--claim-tx", env["claim_tx"],
+                "--htlc-address", env["htlc_addr"],
+                "--chain-id", "31337",
+                "--report",
+            ],
+        )
+        ret_ledger_rep = ledger_main()
+        cap_ledger_rep = capsys.readouterr()
+        assert ret_ledger_rep == 0
+        assert "FINAL CONFORMITY VERDICT: [OK] PASS: CONFORMANT" in cap_ledger_rep.out
+
+        # 4. tc-ledger cross-verify normal output -> exit 0
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "tc-ledger", "cross-verify", str(env["export_file"]),
+                "--rpc-url", server.url,
+                "--lock-tx", env["lock_tx"],
+                "--claim-tx", env["claim_tx"],
+                "--htlc-address", env["htlc_addr"],
+                "--chain-id", "31337",
+            ],
+        )
+        ret_ledger_norm = ledger_main()
+        cap_ledger_norm = capsys.readouterr()
+        assert ret_ledger_norm == 0
+        assert "CROSS-VERIFICATION: CONFORMANT (SUCCESS)" in cap_ledger_norm.out
     finally:
         server.stop()
 

@@ -1316,9 +1316,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     transcript_source = args.transcript_flag or args.transcript
     settlement_source = args.settlement_flag or args.settlement
+    is_json = getattr(args, "json", False)
+    is_report = getattr(args, "report", False)
 
     if not transcript_source:
-        print("error: the following arguments are required: transcript (positional or --transcript)", file=sys.stderr)
+        if is_json:
+            print(json.dumps({"valid": False, "error": "Missing required argument: transcript (positional or --transcript)"}, indent=2))
+        else:
+            print("error: the following arguments are required: transcript (positional or --transcript)", file=sys.stderr)
         return 2
 
     trust_anchors = {
@@ -1336,6 +1341,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "claim_tx": getattr(args, "claim_tx", None),
             "refund_tx": getattr(args, "refund_tx", None),
             "htlc_address": getattr(args, "htlc_address", None),
+            "chain_id": getattr(args, "chain_id", None),
         }
 
     try:
@@ -1346,11 +1352,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             rpc_anchors=rpc_anchors,
         )
     except FileNotFoundError as exc:
-        print(f"I/O Error: {exc}", file=sys.stderr)
-        return 3
+        if is_json:
+            print(json.dumps({"valid": False, "error": f"I/O Error: {exc}"}, indent=2))
+        else:
+            print(f"I/O Error: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:
-        print(f"Runtime Error: {exc}", file=sys.stderr)
-        return 3
+        if is_json:
+            print(json.dumps({"valid": False, "error": f"Runtime Error: {exc}"}, indent=2))
+        else:
+            print(f"Runtime Error: {exc}", file=sys.stderr)
+        return 2
 
     if args.output:
         try:
@@ -1358,15 +1370,41 @@ def main(argv: Optional[list[str]] = None) -> int:
             out_p.parent.mkdir(parents=True, exist_ok=True)
             out_p.write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
         except Exception as exc:
-            print(f"I/O Error writing output file: {exc}", file=sys.stderr)
-            return 3
+            if is_json:
+                print(json.dumps({"valid": False, "error": f"I/O Error writing output file: {exc}"}, indent=2))
+            else:
+                print(f"I/O Error writing output file: {exc}", file=sys.stderr)
+            return 2
+
+    fatal_prefixes = (
+        "transcript source file not found",
+        "settlement evidence file not found",
+        "malformed settlement JSON",
+        "invalid settlement evidence format",
+        "neither settlement evidence nor RPC anchors provided",
+        "EVM RPC settlement verification failed",
+        "unsupported settlement evidence type",
+        "unsupported transcript source type",
+        "failed to extract agreement from export",
+        "failed to load transcript agreement",
+    )
+    fatal_errors = [
+        r for r in proof.get("failure_reasons", [])
+        if any(r.startswith(p) for p in fatal_prefixes)
+    ]
+    if fatal_errors:
+        if is_json:
+            print(json.dumps({"valid": False, "error": fatal_errors[0]}, indent=2))
+        else:
+            print(f"Error: {fatal_errors[0]}", file=sys.stderr)
+        return 2
 
     is_conformant = proof.get("is_conformant", False)
     terms_conformance = proof.get("cross_check", {}).get("terms_conformance", "failed")
 
-    if args.json:
+    if is_json:
         print(json.dumps(proof, indent=2))
-    elif args.report:
+    elif is_report:
         print(format_verification_report(proof, trust_anchors=trust_anchors))
     else:
         if is_conformant:

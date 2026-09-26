@@ -1602,7 +1602,10 @@ def main() -> int:
     cross_parser.add_argument("--json", action="store_true", help="output machine-readable JSON")
     cross_parser.add_argument("--report", action="store_true", help="output human-readable verification report")
 
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except SystemExit as e:
+        return 2 if e.code != 0 else 0
     is_json = getattr(args, "json", False)
 
     if args.command == "vectors":
@@ -2018,11 +2021,13 @@ def main() -> int:
 
 
     if args.command == "cross-verify":
-        from tc_ledger.cross_verify import verify_cross_layer
+        from tc_ledger.cross_verify import format_verification_report, verify_cross_layer
+        is_report = getattr(args, "report", False)
         trust_anchors = {
             "room": args.room,
             "expected_root": args.expected_root,
             "expected_contract_id": args.expected_contract_id,
+            "chain_id": getattr(args, "chain_id", None),
         }
         rpc_anchors = None
         if getattr(args, "rpc_url", None):
@@ -2046,7 +2051,7 @@ def main() -> int:
                 print(json.dumps({"valid": False, "error": str(exc)}, indent=2))
             else:
                 print(f"Runtime Error: {exc}", file=sys.stderr)
-            return 3
+            return 2
 
         if args.output:
             try:
@@ -2058,25 +2063,47 @@ def main() -> int:
                     print(json.dumps({"valid": False, "error": f"Failed to write output: {exc}"}, indent=2))
                 else:
                     print(f"I/O Error writing output: {exc}", file=sys.stderr)
-                return 3
+                return 2
+
+        fatal_prefixes = (
+            "transcript source file not found",
+            "settlement evidence file not found",
+            "malformed settlement JSON",
+            "invalid settlement evidence format",
+            "neither settlement evidence nor RPC anchors provided",
+            "EVM RPC settlement verification failed",
+            "unsupported settlement evidence type",
+            "unsupported transcript source type",
+            "failed to extract agreement from export",
+            "failed to load transcript agreement",
+        )
+        fatal_errors = [
+            r for r in proof.get("failure_reasons", [])
+            if any(r.startswith(p) for p in fatal_prefixes)
+        ]
+        if fatal_errors:
+            if is_json:
+                print(json.dumps({"valid": False, "error": fatal_errors[0]}, indent=2))
+            else:
+                print(f"Error: {fatal_errors[0]}", file=sys.stderr)
+            return 2
 
         is_conformant = proof.get("is_conformant", False)
+        terms_conformance = proof.get("cross_check", {}).get("terms_conformance", "failed")
+
         if is_json:
             print(json.dumps(proof, indent=2))
-        elif getattr(args, "report", False):
-            from tc_ledger.cross_verify import format_verification_report
+        elif is_report:
             print(format_verification_report(proof, trust_anchors=trust_anchors))
         else:
             if is_conformant:
                 print("CROSS-VERIFICATION: CONFORMANT (SUCCESS)")
                 print(f"Contract ID: {proof.get('contract_id')}")
                 print(f"Room:        {proof.get('room')}")
-                print(f"Amount:      {proof.get('agreement', {}).get('amount')}")
-                print(f"Asset:       {proof.get('agreement', {}).get('asset')}")
-                print(f"Hashlock:    {proof.get('agreement', {}).get('hashlock')}")
+                print(f"Terms:       {terms_conformance}")
                 print(f"Settlement:  {proof.get('settlement', {}).get('status')}")
             else:
-                print("CROSS-VERIFICATION: NON-CONFORMANT (FAILED)", file=sys.stderr)
+                print(f"CROSS-VERIFICATION: NON-CONFORMANT (Terms: {terms_conformance})", file=sys.stderr)
                 for reason in proof.get("failure_reasons", []):
                     print(f"  - Failure: {reason}", file=sys.stderr)
 

@@ -494,7 +494,7 @@ def test_cli_cross_verify(mock_deal_environment):
 
     # File not found
     ret_io = cross_verify_main(["non_existent.jsonl", str(env["settlement_file"])])
-    assert ret_io == 1 or ret_io == 3
+    assert ret_io == 2
 
 
 # Test: Fake lock_tx does not imply on-chain execution
@@ -757,3 +757,143 @@ def test_cli_report_preserves_json_behavior(mock_deal_environment, capsys, monke
     assert "spec" in parsed2
     assert "is_conformant" in parsed2
     assert ret2 == 1
+
+
+# --- Strict CLI Exit Code Contract Regression Tests ---
+
+def test_cli_exit_code_contract_non_conformant(mock_deal_environment, capsys, monkeypatch):
+    """Test exit code 1 for completed non-conformant verifications."""
+    env = mock_deal_environment
+
+    # 1. tclk-proof normal output -> exit 1
+    ret = cross_verify_main([str(env["export_file"]), str(env["settlement_file"])])
+    cap = capsys.readouterr()
+    assert ret == 1
+    assert "CROSS-VERIFICATION: NON-CONFORMANT" in cap.err
+
+    # 2. tclk-proof --report -> exit 1
+    ret = cross_verify_main(["verify", str(env["export_file"]), str(env["settlement_file"]), "--report"])
+    cap = capsys.readouterr()
+    assert ret == 1
+    assert "TCLK-PROOF VERIFICATION REPORT" in cap.out
+    assert "FINAL CONFORMITY VERDICT: [FAIL] FAIL: NON-CONFORMANT" in cap.out
+
+    # 3. tc-ledger cross-verify normal output -> exit 1
+    monkeypatch.setattr(
+        "sys.argv",
+        ["tc-ledger", "cross-verify", str(env["export_file"]), str(env["settlement_file"])],
+    )
+    ret = ledger_main()
+    cap = capsys.readouterr()
+    assert ret == 1
+    assert "CROSS-VERIFICATION: NON-CONFORMANT" in cap.err
+
+    # 4. tc-ledger cross-verify --report -> exit 1
+    monkeypatch.setattr(
+        "sys.argv",
+        ["tc-ledger", "cross-verify", str(env["export_file"]), str(env["settlement_file"]), "--report"],
+    )
+    ret = ledger_main()
+    cap = capsys.readouterr()
+    assert ret == 1
+    assert "TCLK-PROOF VERIFICATION REPORT" in cap.out
+    assert "FINAL CONFORMITY VERDICT: [FAIL] FAIL: NON-CONFORMANT" in cap.out
+
+
+def test_cli_exit_code_contract_invocation_and_input_errors(mock_deal_environment, tmp_path, capsys, monkeypatch):
+    """Test exit code 2 for missing arguments, bad flags, missing files, and malformed inputs."""
+    env = mock_deal_environment
+
+    # 1. Missing transcript argument
+    ret1 = cross_verify_main([])
+    cap1 = capsys.readouterr()
+    assert ret1 == 2
+    assert "the following arguments are required" in cap1.err
+
+    # 2. Missing transcript with --json -> returns 2 with valid JSON error output
+    ret_json = cross_verify_main(["--json"])
+    cap_json = capsys.readouterr()
+    assert ret_json == 2
+    parsed_err = json.loads(cap_json.out)
+    assert parsed_err["valid"] is False
+    assert "Missing required argument" in parsed_err["error"]
+
+    # 3. Nonexistent transcript file -> returns 2 (and valid JSON if --json)
+    ret_no_file = cross_verify_main(["non_existent_file.jsonl", str(env["settlement_file"]), "--json"])
+    cap_no_file = capsys.readouterr()
+    assert ret_no_file == 2
+    parsed_io = json.loads(cap_no_file.out)
+    assert parsed_io["valid"] is False
+    assert "transcript source file not found" in parsed_io["error"]
+
+    # 4. Malformed JSONL transcript file -> returns 2
+    bad_transcript = tmp_path / "bad_transcript.jsonl"
+    bad_transcript.write_text("{this is not valid json\n", encoding="utf-8")
+    ret_bad_t = cross_verify_main([str(bad_transcript), str(env["settlement_file"])])
+    cap_bad_t = capsys.readouterr()
+    assert ret_bad_t == 2
+    assert "Runtime Error" in cap_bad_t.err or "Error" in cap_bad_t.err
+
+    # 5. Malformed JSON settlement file -> returns 2
+    valid_transcript = tmp_path / "empty_transcript.jsonl"
+    valid_transcript.write_text("", encoding="utf-8")
+    bad_settlement = tmp_path / "bad_settlement.json"
+    bad_settlement.write_text("invalid json content", encoding="utf-8")
+    ret_bad_s = cross_verify_main([str(valid_transcript), str(bad_settlement), "--json"])
+    cap_bad_s = capsys.readouterr()
+    assert ret_bad_s == 2
+    parsed_bad_s = json.loads(cap_bad_s.out)
+    assert parsed_bad_s["valid"] is False
+
+    # 6. Check tc-ledger cross-verify produces exit 2 on same errors
+    monkeypatch.setattr(
+        "sys.argv",
+        ["tc-ledger", "cross-verify", "non_existent.jsonl"],
+    )
+    ret_ledger_err = ledger_main()
+    assert ret_ledger_err == 2
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["tc-ledger", "cross-verify", "non_existent.jsonl", "--json"],
+    )
+    ret_ledger_json = ledger_main()
+    cap_ledger_json = capsys.readouterr()
+    assert ret_ledger_json == 2
+    parsed_ledger = json.loads(cap_ledger_json.out)
+    assert parsed_ledger["valid"] is False
+
+
+def test_cli_exit_code_contract_rpc_configuration_errors(mock_deal_environment, capsys, monkeypatch):
+    """Test exit code 2 for missing required RPC parameters (e.g. omitted chain-id)."""
+    env = mock_deal_environment
+
+    # --rpc-url without --chain-id must fail closed with exit code 2
+    ret = cross_verify_main([
+        str(env["export_file"]),
+        "--rpc-url", "http://127.0.0.1:8545",
+        "--lock-tx", "0x" + "1" * 64,
+        "--json",
+    ])
+    cap = capsys.readouterr()
+    assert ret == 2
+    parsed = json.loads(cap.out)
+    assert parsed["valid"] is False
+    assert "chain_id" in parsed["error"]
+
+    # Same check for tc-ledger cross-verify
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "tc-ledger", "cross-verify", str(env["export_file"]),
+            "--rpc-url", "http://127.0.0.1:8545",
+            "--lock-tx", "0x" + "1" * 64,
+            "--json",
+        ],
+    )
+    ret_ledger = ledger_main()
+    cap_ledger = capsys.readouterr()
+    assert ret_ledger == 2
+    parsed_l = json.loads(cap_ledger.out)
+    assert parsed_l["valid"] is False
+    assert "chain_id" in parsed_l["error"]
